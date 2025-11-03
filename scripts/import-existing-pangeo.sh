@@ -734,13 +734,32 @@ setup_backend() {
             --versioning-configuration Status=Enabled
     fi
 
+    # Check if DynamoDB table exists for state locking
+    DYNAMODB_TABLE="tofu-state-lock-${ENVIRONMENT}"
+    if aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region "$REGION" 2>/dev/null >/dev/null; then
+        log_info "DynamoDB table already exists: $DYNAMODB_TABLE"
+    else
+        log_info "Creating DynamoDB table for state locking: $DYNAMODB_TABLE"
+        aws dynamodb create-table \
+            --table-name "$DYNAMODB_TABLE" \
+            --attribute-definitions AttributeName=LockID,AttributeType=S \
+            --key-schema AttributeName=LockID,KeyType=HASH \
+            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+            --region "$REGION"
+
+        # Wait for table to be active
+        log_info "Waiting for DynamoDB table to be active..."
+        aws dynamodb wait table-exists --table-name "$DYNAMODB_TABLE" --region "$REGION"
+        log_info "DynamoDB table created successfully"
+    fi
+
     # Create backend configuration
     cat > backend.tfvars << EOF
 bucket         = "$STATE_BUCKET"
 key            = "terraform.tfstate"
 region         = "$REGION"
 encrypt        = true
-dynamodb_table = "tofu-state-lock-${ENVIRONMENT}"
+dynamodb_table = "$DYNAMODB_TABLE"
 EOF
 
     log_info "Backend configuration created"
