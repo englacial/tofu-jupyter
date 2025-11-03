@@ -1,6 +1,7 @@
 #!/bin/bash
 # Import script for existing "pangeo" EKS cluster into OpenTofu management
 # This script safely imports your existing infrastructure without any modifications
+# Sensitive data will be encrypted using SOPS for security
 
 set -e
 
@@ -118,6 +119,28 @@ check_prerequisites() {
         exit 1
     fi
 
+    # Check SOPS for secret encryption (REQUIRED)
+    if ! command -v sops &> /dev/null; then
+        log_error "SOPS is not installed. This is REQUIRED for secure handling of sensitive data."
+        echo ""
+        echo "Please install SOPS first:"
+        echo ""
+        echo "  macOS:"
+        echo "    brew install sops"
+        echo ""
+        echo "  Linux:"
+        echo "    wget https://github.com/getsops/sops/releases/latest/download/sops-linux-amd64"
+        echo "    chmod +x sops-linux-amd64"
+        echo "    sudo mv sops-linux-amd64 /usr/local/bin/sops"
+        echo ""
+        echo "  Or download from: https://github.com/getsops/sops/releases"
+        echo ""
+        log_error "Cannot proceed without SOPS for security reasons."
+        exit 1
+    fi
+    SOPS_AVAILABLE=true
+    log_info "✅ SOPS found - sensitive data will be encrypted"
+
     # Check for YAML processing tools (optional)
     if command -v yq &> /dev/null; then
         YAML_PROCESSOR="yq"
@@ -149,6 +172,76 @@ check_prerequisites() {
     log_info "AWS CLI default output format: ${AWS_DEFAULT_OUTPUT:-json}"
 
     log_info "Prerequisites check passed"
+}
+
+# Check and update .gitignore
+check_gitignore() {
+    log_info "Checking .gitignore configuration..."
+
+    # Critical entries that must be in .gitignore
+    REQUIRED_ENTRIES=(
+        "imports/"
+        "import-resources.tf"
+        "existing-cluster.tf"
+        "generated-resources.tf"
+        "backend.tfvars"
+        "*.tfvars"
+        "secrets.yaml"
+        "secrets.enc.yaml"
+        "import-secrets.yaml"
+        "import-secrets.enc.yaml"
+    )
+
+    # Check if .gitignore exists
+    if [ ! -f .gitignore ]; then
+        log_warn ".gitignore not found! Creating one..."
+        touch .gitignore
+    fi
+
+    # Check for missing entries
+    MISSING_ENTRIES=()
+    for entry in "${REQUIRED_ENTRIES[@]}"; do
+        if ! grep -qF "$entry" .gitignore 2>/dev/null; then
+            MISSING_ENTRIES+=("$entry")
+        fi
+    done
+
+    if [ ${#MISSING_ENTRIES[@]} -gt 0 ]; then
+        echo ""
+        log_warn "⚠️  SECURITY WARNING: The following entries are missing from .gitignore:"
+        echo ""
+        for entry in "${MISSING_ENTRIES[@]}"; do
+            echo "    - $entry"
+        done
+        echo ""
+        log_warn "These files/folders may contain sensitive information like:"
+        log_warn "  • AWS Account IDs"
+        log_warn "  • IAM Role ARNs"
+        log_warn "  • KMS Key IDs"
+        log_warn "  • Security Group IDs"
+        log_warn "  • OIDC Provider URLs"
+        echo ""
+
+        read -p "Do you want to add these entries to .gitignore now? (yes/no): " -r
+        if [[ $REPLY =~ ^[Yy]es$ ]]; then
+            echo "" >> .gitignore
+            echo "# Import-related files (may contain sensitive data)" >> .gitignore
+            for entry in "${MISSING_ENTRIES[@]}"; do
+                echo "$entry" >> .gitignore
+                log_info "Added $entry to .gitignore"
+            done
+            log_info "✅ .gitignore updated successfully"
+        else
+            log_error "❌ CRITICAL: Without proper .gitignore entries, sensitive data may be committed to git!"
+            log_error "Please add the entries manually before committing any changes."
+            read -p "Continue anyway? (yes/no): " -r
+            if [[ ! $REPLY =~ ^[Yy]es$ ]]; then
+                exit 1
+            fi
+        fi
+    else
+        log_info "✅ .gitignore properly configured"
+    fi
 }
 
 # Gather existing resource information
@@ -234,6 +327,93 @@ EOF
 
     log_info "Resource gathering complete. Summary saved to imports/import-summary.txt"
     cd ..
+}
+
+# Create encrypted secrets file
+create_encrypted_secrets() {
+    log_info "Extracting and encrypting sensitive data..."
+
+    # Extract sensitive values from gathered data
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    CLUSTER_ROLE_ARN=$(jq -r '.cluster.roleArn' imports/cluster.json)
+    OIDC_ISSUER=$(jq -r '.cluster.identity.oidc.issuer' imports/cluster.json)
+    OIDC_ID=$(echo $OIDC_ISSUER | rev | cut -d'/' -f1 | rev)
+    OIDC_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}"
+    KMS_KEY_ARN=$(jq -r '.cluster.encryptionConfig[0].provider.keyArn' imports/cluster.json 2>/dev/null || echo "")
+
+    # Get node role ARNs
+    MAIN_NODE_ROLE_ARN=$(jq -r '.nodegroup.nodeRole' imports/nodegroup-main2.json 2>/dev/null || "")
+    DASK_NODE_ROLE_ARN=$(jq -r '.nodegroup.nodeRole' imports/nodegroup-dask-workers.json 2>/dev/null || "")
+
+    # Get launch templates
+    MAIN_LT_ID=$(jq -r '.nodegroup.launchTemplate.id' imports/nodegroup-main2.json 2>/dev/null || "")
+    DASK_LT_ID=$(jq -r '.nodegroup.launchTemplate.id' imports/nodegroup-dask-workers.json 2>/dev/null || "")
+
+    # Create secrets YAML file
+    cat > import-secrets.yaml << EOF
+# Sensitive data extracted from EKS cluster import
+# This file contains sensitive information and should be encrypted with SOPS
+# Generated: $(date)
+
+aws:
+  account_id: "$ACCOUNT_ID"
+  region: "$REGION"
+
+cluster:
+  name: "$CLUSTER_NAME"
+  role_arn: "$CLUSTER_ROLE_ARN"
+
+oidc:
+  issuer: "$OIDC_ISSUER"
+  provider_arn: "$OIDC_ARN"
+
+kms:
+  key_arn: "$KMS_KEY_ARN"
+
+node_groups:
+  main:
+    role_arn: "$MAIN_NODE_ROLE_ARN"
+    launch_template_id: "$MAIN_LT_ID"
+  dask:
+    role_arn: "$DASK_NODE_ROLE_ARN"
+    launch_template_id: "$DASK_LT_ID"
+
+# State backend configuration
+backend:
+  bucket: "tofu-state-jupyterhub-${ENVIRONMENT}-${ACCOUNT_ID}"
+  dynamodb_table: "tofu-state-lock-${ENVIRONMENT}"
+EOF
+
+    # Check for KMS key for SOPS
+    KMS_KEY_ALIAS="alias/sops-${CLUSTER_NAME}-${ENVIRONMENT}"
+    KMS_KEY_ID=$(aws kms describe-alias --alias-name "$KMS_KEY_ALIAS" 2>/dev/null | jq -r '.AliasArn' || echo "")
+
+    if [ -z "$KMS_KEY_ID" ] || [ "$KMS_KEY_ID" = "null" ]; then
+        log_info "KMS key for SOPS not found. Creating one..."
+        KMS_KEY_ID=$(aws kms create-key --description "SOPS encryption key for ${CLUSTER_NAME}-${ENVIRONMENT}" \
+            --query 'KeyMetadata.KeyId' --output text)
+        aws kms create-alias --alias-name "$KMS_KEY_ALIAS" --target-key-id "$KMS_KEY_ID"
+        log_info "Created KMS key: $KMS_KEY_ALIAS"
+    else
+        log_info "Using existing KMS key: $KMS_KEY_ALIAS"
+    fi
+
+    # Create SOPS config
+    cat > .sops.yaml << EOF
+creation_rules:
+  - path_regex: .*secrets.*\.yaml$
+    kms: arn:aws:kms:${REGION}:${ACCOUNT_ID}:alias/sops-${CLUSTER_NAME}-${ENVIRONMENT}
+EOF
+
+    # Encrypt the secrets file
+    log_info "Encrypting secrets with SOPS..."
+    sops -e import-secrets.yaml > import-secrets.enc.yaml
+
+    # Remove the plain text version
+    rm -f import-secrets.yaml
+
+    log_info "✅ Sensitive data encrypted in import-secrets.enc.yaml"
+    log_info "To view/edit: sops import-secrets.enc.yaml"
 }
 
 # Generate OpenTofu import configuration
@@ -596,7 +776,9 @@ main() {
     echo ""
 
     check_prerequisites
+    check_gitignore  # Check .gitignore BEFORE gathering resources
     gather_resources
+    create_encrypted_secrets  # Create encrypted secrets file
     generate_import_config
     setup_backend
 
@@ -607,7 +789,15 @@ main() {
     echo "  - import-resources.tf     (import blocks)"
     echo "  - existing-cluster.tf      (resource definitions)"
     echo "  - backend.tfvars          (state backend config)"
+    echo "  - import-secrets.enc.yaml (ENCRYPTED sensitive data)"
+    echo "  - .sops.yaml              (SOPS configuration)"
     echo "  - imports/                (gathered resource data)"
+    echo ""
+    echo "🔒 SECURITY NOTES:"
+    echo "  - Sensitive data has been encrypted in import-secrets.enc.yaml"
+    echo "  - The imports/ folder contains raw AWS data (excluded from git)"
+    echo "  - Use 'sops import-secrets.enc.yaml' to view/edit secrets"
+    echo "  - All sensitive files are excluded from git via .gitignore"
     echo ""
     echo "Next steps:"
     echo "1. Review the generated configuration files"
