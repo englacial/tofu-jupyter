@@ -180,10 +180,11 @@ check_gitignore() {
 
     # Critical entries that must be in .gitignore
     REQUIRED_ENTRIES=(
-        "imports/"
-        "import-resources.tf"
-        "existing-cluster.tf"
-        "generated-resources.tf"
+        "import-workspace/"           # Entire import workspace directory
+        "imports/"                    # Legacy: if created in root
+        "import-resources.tf"         # Legacy: if created in root
+        "existing-cluster.tf"         # Legacy: if created in root
+        "generated-resources.tf"      # Legacy: if created in root
         "backend.tfvars"              # Root-level backend config with account ID
         "/terraform.tfvars"           # Root-level tfvars (if created)
         "secrets.yaml"
@@ -250,7 +251,11 @@ check_gitignore() {
 gather_resources() {
     log_info "Gathering information about cluster: $CLUSTER_NAME"
 
-    # Create imports directory
+    # Create import workspace to isolate from main project
+    mkdir -p import-workspace
+    cd import-workspace
+
+    # Create imports subdirectory for raw data
     mkdir -p imports
     cd imports
 
@@ -328,12 +333,15 @@ Next Steps:
 EOF
 
     log_info "Resource gathering complete. Summary saved to imports/import-summary.txt"
-    cd ..
+    cd ../..  # Back to project root
 }
 
 # Create encrypted secrets file
 create_encrypted_secrets() {
     log_info "Extracting and encrypting sensitive data..."
+
+    # Work in import-workspace directory
+    cd import-workspace
 
     # Extract sensitive values from gathered data
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -388,16 +396,21 @@ EOF
 
     # Check for KMS key for SOPS
     KMS_KEY_ALIAS="alias/sops-${CLUSTER_NAME}-${ENVIRONMENT}"
-    KMS_KEY_ID=$(aws kms describe-alias --alias-name "$KMS_KEY_ALIAS" 2>/dev/null | jq -r '.AliasArn' || echo "")
 
-    if [ -z "$KMS_KEY_ID" ] || [ "$KMS_KEY_ID" = "null" ]; then
+    # Check if alias exists using list-aliases to avoid false positives
+    ALIAS_EXISTS=$(aws kms list-aliases --query "Aliases[?AliasName=='${KMS_KEY_ALIAS}'].AliasName" --output text 2>/dev/null || echo "")
+
+    if [ -n "$ALIAS_EXISTS" ]; then
+        # Alias exists, get the target key ID
+        KMS_KEY_ID=$(aws kms list-aliases --query "Aliases[?AliasName=='${KMS_KEY_ALIAS}'].TargetKeyId" --output text)
+        log_info "Using existing KMS key: $KMS_KEY_ALIAS (Key ID: $KMS_KEY_ID)"
+    else
+        # Alias doesn't exist, create a new key and alias
         log_info "KMS key for SOPS not found. Creating one..."
         KMS_KEY_ID=$(aws kms create-key --description "SOPS encryption key for ${CLUSTER_NAME}-${ENVIRONMENT}" \
             --query 'KeyMetadata.KeyId' --output text)
         aws kms create-alias --alias-name "$KMS_KEY_ALIAS" --target-key-id "$KMS_KEY_ID"
-        log_info "Created KMS key: $KMS_KEY_ALIAS"
-    else
-        log_info "Using existing KMS key: $KMS_KEY_ALIAS"
+        log_info "Created KMS key: $KMS_KEY_ALIAS (Key ID: $KMS_KEY_ID)"
     fi
 
     # Create SOPS config
@@ -416,11 +429,16 @@ EOF
 
     log_info "✅ Sensitive data encrypted in import-secrets.enc.yaml"
     log_info "To view/edit: sops import-secrets.enc.yaml"
+
+    cd ..  # Back to project root
 }
 
 # Generate OpenTofu import configuration
 generate_import_config() {
     log_info "Generating OpenTofu import configuration..."
+
+    # Work in import-workspace directory
+    cd import-workspace
 
     # Read gathered data
     VPC_ID=$(jq -r '.cluster.resourcesVpcConfig.vpcId' imports/cluster.json)
@@ -682,11 +700,15 @@ terraform {
 EOF
 
     log_info "Import configuration generated"
+    cd ..  # Back to project root
 }
 
 # Create backend configuration
 setup_backend() {
     log_info "Setting up OpenTofu backend..."
+
+    # Work in import-workspace directory
+    cd import-workspace
 
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
     STATE_BUCKET="tofu-state-jupyterhub-${ENVIRONMENT}-${ACCOUNT_ID}"
@@ -719,11 +741,15 @@ dynamodb_table = "tofu-state-lock-${ENVIRONMENT}"
 EOF
 
     log_info "Backend configuration created"
+    cd ..  # Back to project root
 }
 
 # Execute import
 execute_import() {
     log_info "Executing OpenTofu import..."
+
+    # Work in import-workspace directory
+    cd import-workspace
 
     # Initialize OpenTofu
     log_info "Initializing OpenTofu..."
@@ -787,7 +813,7 @@ main() {
     echo ""
     log_info "Preparation complete!"
     echo ""
-    echo "Generated files:"
+    echo "Generated files in import-workspace/:"
     echo "  - import-resources.tf     (import blocks)"
     echo "  - existing-cluster.tf      (resource definitions)"
     echo "  - backend.tfvars          (state backend config)"
@@ -796,17 +822,18 @@ main() {
     echo "  - imports/                (gathered resource data)"
     echo ""
     echo "🔒 SECURITY NOTES:"
+    echo "  - All import files are isolated in import-workspace/"
     echo "  - Sensitive data has been encrypted in import-secrets.enc.yaml"
     echo "  - The imports/ folder contains raw AWS data (excluded from git)"
-    echo "  - Use 'sops import-secrets.enc.yaml' to view/edit secrets"
+    echo "  - Use 'cd import-workspace && sops import-secrets.enc.yaml' to view/edit secrets"
     echo "  - All sensitive files are excluded from git via .gitignore"
     echo ""
     echo "Next steps:"
-    echo "1. Review the generated configuration files"
+    echo "1. Review files: cd import-workspace && ls -la"
     echo "2. Adjust resource definitions if needed"
-    echo "3. Run: tofu init -backend-config=backend.tfvars"
-    echo "4. Run: tofu plan (should show no changes)"
-    echo "5. Run: tofu import aws_eks_cluster.main pangeo"
+    echo "3. Run: cd import-workspace && tofu init -backend-config=backend.tfvars"
+    echo "4. Run: cd import-workspace && tofu plan (should show no changes)"
+    echo "5. Run: cd import-workspace && tofu import aws_eks_cluster.main pangeo"
     echo ""
 
     read -p "Do you want to continue with automatic import? (yes/no): " -r
