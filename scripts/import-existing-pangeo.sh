@@ -696,6 +696,9 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Backend configuration (will be overridden by -backend-config)
+  backend "s3" {}
 }
 EOF
 
