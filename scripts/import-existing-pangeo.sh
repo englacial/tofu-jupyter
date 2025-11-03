@@ -184,12 +184,14 @@ check_gitignore() {
         "import-resources.tf"
         "existing-cluster.tf"
         "generated-resources.tf"
-        "backend.tfvars"
-        "*.tfvars"
+        "backend.tfvars"              # Root-level backend config with account ID
+        "/terraform.tfvars"           # Root-level tfvars (if created)
         "secrets.yaml"
         "secrets.enc.yaml"
         "import-secrets.yaml"
         "import-secrets.enc.yaml"
+        "*.auto.tfvars"              # Any auto-generated tfvars
+        "import-*.tfvars"            # Any import-specific tfvars
     )
 
     # Check if .gitignore exists
