@@ -1,0 +1,53 @@
+# Markdown files (exclude from initial commit)
+*.md
+
+# OpenTofu/Terraform files to exclude
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfplan
+*.auto.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Temporary and generated files
+generated-resources.tf
+imports/
+*.backup
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Sensitive files
+*.pem
+*.key
+*.crt
+*.pfx
+secrets.tfvars
+*.secret
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Temporary directories
+tmp/
+temp/
