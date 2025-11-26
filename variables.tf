@@ -2,11 +2,11 @@
 
 # Core Configuration
 variable "environment" {
-  description = "Environment name (dev, staging, prod)"
+  description = "Environment name (test, dev, staging, prod, dasktest, daskscale, meseeks)"
   type        = string
   validation {
-    condition     = contains(["dev", "staging", "prod"], var.environment)
-    error_message = "Environment must be dev, staging, or prod."
+    condition     = contains(["test", "dev", "staging", "prod", "dasktest", "daskscale", "meseeks"], var.environment)
+    error_message = "Environment must be test, dev, staging, prod, dasktest, daskscale, or meseeks."
   }
 }
 
@@ -25,6 +25,38 @@ variable "cluster_name" {
 variable "domain_name" {
   description = "Domain name for JupyterHub access"
   type        = string
+}
+
+# Deployment Type
+variable "enable_jupyterhub" {
+  description = "Enable JupyterHub deployment (set to false for standalone Dask Gateway only)"
+  type        = bool
+  default     = true
+}
+
+# ACM Certificate Configuration
+variable "enable_acm" {
+  description = "Enable ACM certificate creation (set to false for HTTP-only deployments)"
+  type        = bool
+  default     = true
+}
+
+variable "acm_enable_wildcard" {
+  description = "Include wildcard (*.domain) as subject alternative name on ACM certificate"
+  type        = bool
+  default     = true
+}
+
+variable "acm_auto_validate" {
+  description = "Automatically wait for ACM certificate DNS validation. Set to false for manual validation with external DNS providers."
+  type        = bool
+  default     = false
+}
+
+variable "acm_validation_timeout" {
+  description = "Timeout for ACM certificate validation (only applies if acm_auto_validate is true)"
+  type        = string
+  default     = "45m"
 }
 
 variable "admin_email" {
@@ -69,9 +101,80 @@ variable "single_nat_gateway" {
   default     = true
 }
 
-# Node Group Configuration - Main
+variable "pin_main_nodes_single_az" {
+  description = "Pin main node group to single AZ (us-west-2a) for reliable scale-up with EBS volumes (test envs only)"
+  type        = bool
+  default     = false
+}
+
+# Node Group Configuration - System (Always Running)
+# For environments using 3-node-group architecture (system, user, worker)
+variable "system_node_instance_types" {
+  description = "Instance types for system node group (Hub, Kubecost, Prometheus)"
+  type        = list(string)
+  default     = ["r5.large"]
+}
+
+variable "system_node_min_size" {
+  description = "Minimum number of system nodes (should be 1)"
+  type        = number
+  default     = 1
+}
+
+variable "system_node_desired_size" {
+  description = "Desired number of system nodes (should be 1)"
+  type        = number
+  default     = 1
+}
+
+variable "system_node_max_size" {
+  description = "Maximum number of system nodes (should be 1)"
+  type        = number
+  default     = 1
+}
+
+variable "system_enable_spot_instances" {
+  description = "Use spot instances for system node group (NOT recommended)"
+  type        = bool
+  default     = false
+}
+
+# Node Group Configuration - User Pods (Scale to Zero)
+# For environments using 3-node-group architecture
+variable "user_node_instance_types" {
+  description = "Instance types for user node group (JupyterHub user pods)"
+  type        = list(string)
+  default     = ["r5.xlarge"]
+}
+
+variable "user_node_min_size" {
+  description = "Minimum number of user nodes (can be 0 for scale-to-zero)"
+  type        = number
+  default     = 0
+}
+
+variable "user_node_desired_size" {
+  description = "Desired number of user nodes"
+  type        = number
+  default     = 0
+}
+
+variable "user_node_max_size" {
+  description = "Maximum number of user nodes"
+  type        = number
+  default     = 10
+}
+
+variable "user_enable_spot_instances" {
+  description = "Use spot instances for user node group (not recommended for user experience)"
+  type        = bool
+  default     = false
+}
+
+# Node Group Configuration - Main (Legacy/2-node architecture)
+# Kept for backwards compatibility with existing environments
 variable "main_node_instance_types" {
-  description = "Instance types for main node group"
+  description = "Instance types for main node group (legacy 2-node architecture)"
   type        = list(string)
   default     = ["r5.xlarge"]
 }
@@ -94,6 +197,12 @@ variable "main_node_max_size" {
   default     = 5
 }
 
+variable "main_enable_spot_instances" {
+  description = "Use spot instances for main node group (NOT recommended - causes JupyterHub instability)"
+  type        = bool
+  default     = false
+}
+
 # Node Group Configuration - Dask Workers
 variable "dask_node_instance_types" {
   description = "Instance types for Dask worker nodes"
@@ -104,7 +213,7 @@ variable "dask_node_instance_types" {
 variable "dask_node_min_size" {
   description = "Minimum number of Dask nodes"
   type        = number
-  default     = 0  # Scale to zero!
+  default     = 0 # Scale to zero!
 }
 
 variable "dask_node_desired_size" {
@@ -119,10 +228,36 @@ variable "dask_node_max_size" {
   default     = 30
 }
 
-variable "enable_spot_instances" {
-  description = "Use spot instances for Dask workers"
+variable "main_enable_spot_instances" {
+  description = "Use spot instances for main node group (NOT recommended - causes JupyterHub instability)"
+  type        = bool
+  default     = false
+}
+
+variable "dask_enable_spot_instances" {
+  description = "Use spot instances for Dask worker node group (recommended for cost savings)"
   type        = bool
   default     = true
+}
+
+# Node Group Architecture Selection
+variable "use_three_node_groups" {
+  description = "Use 3-node-group architecture (system, user, worker) instead of 2-node (main, worker)"
+  type        = bool
+  default     = false
+}
+
+# Container Image Configuration
+variable "singleuser_image_name" {
+  description = "Docker image name for single user notebooks"
+  type        = string
+  default     = "pangeo/pangeo-notebook"
+}
+
+variable "singleuser_image_tag" {
+  description = "Docker image tag for single user notebooks"
+  type        = string
+  default     = "2025.01.10"
 }
 
 # User Resource Limits
@@ -173,13 +308,13 @@ variable "dask_cluster_max_cores" {
 variable "kernel_cull_timeout" {
   description = "Timeout for idle kernels (seconds)"
   type        = number
-  default     = 1200  # 20 minutes
+  default     = 1200 # 20 minutes
 }
 
 variable "server_cull_timeout" {
   description = "Timeout for idle servers (seconds)"
   type        = number
-  default     = 3600  # 1 hour
+  default     = 3600 # 1 hour
 }
 
 # S3 Configuration
@@ -211,18 +346,24 @@ variable "enable_auto_shutdown" {
 variable "shutdown_schedule" {
   description = "Cron schedule for automatic shutdown"
   type        = string
-  default     = "0 19 * * MON-FRI"  # 7 PM weekdays
+  default     = "0 19 * * MON-FRI" # 7 PM weekdays
 }
 
 variable "startup_schedule" {
   description = "Cron schedule for automatic startup"
   type        = string
-  default     = "0 8 * * MON-FRI"   # 8 AM weekdays
+  default     = "0 8 * * MON-FRI" # 8 AM weekdays
 }
 
 # Monitoring
 variable "enable_monitoring" {
   description = "Enable CloudWatch monitoring and dashboards"
+  type        = bool
+  default     = false
+}
+
+variable "enable_kubecost" {
+  description = "Enable Kubecost cost monitoring with AWS CUR integration"
   type        = bool
   default     = false
 }

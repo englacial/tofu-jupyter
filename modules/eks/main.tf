@@ -214,14 +214,122 @@ resource "aws_iam_role_policy" "node_ebs_policy" {
   })
 }
 
-# Main Node Group
+# Launch Template for Main Node Group (with NVMe mounting)
+resource "aws_launch_template" "main" {
+  name_prefix = "${var.cluster_name}-main-"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size = 50  # Smaller root volume since we have NVMe
+      volume_type = "gp3"
+      encrypted   = true
+    }
+  }
+
+  # User data script in MIME multipart format (required for EKS managed node groups)
+  # NOTE: Do NOT call bootstrap.sh - EKS managed node groups handle this automatically
+  user_data = base64encode(<<-EOF
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+--==MYBOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+set -ex
+
+# DO NOT call /etc/eks/bootstrap.sh here - EKS managed node groups handle it automatically
+# Mount NVMe storage and configure containerd to use it
+
+echo "Starting NVMe mount and containerd configuration script..."
+
+# Wait for NVMe devices to be available
+sleep 5
+
+# Find the NVMe device (not the root device)
+NVME_DEVICE=$(lsblk -d -n | grep nvme | grep -v nvme0n1 | head -1 | awk '{print "/dev/"$1}')
+
+if [ ! -z "$NVME_DEVICE" ]; then
+  echo "Found NVMe device: $NVME_DEVICE"
+
+  # Check if already formatted
+  if ! blkid $NVME_DEVICE; then
+    echo "Formatting $NVME_DEVICE with ext4..."
+    mkfs -t ext4 $NVME_DEVICE
+  fi
+
+  # Mount to /mnt/nvme
+  mkdir -p /mnt/nvme
+  mount $NVME_DEVICE /mnt/nvme
+  chmod 755 /mnt/nvme
+
+  # Add to fstab for persistence
+  if ! grep -q "$NVME_DEVICE" /etc/fstab; then
+    echo "$NVME_DEVICE /mnt/nvme ext4 defaults,noatime 0 0" >> /etc/fstab
+  fi
+
+  # Create containerd directories on NVMe
+  mkdir -p /mnt/nvme/containerd
+  chmod 711 /mnt/nvme/containerd
+
+  # Stop containerd before moving data
+  systemctl stop containerd || true
+
+  # Move existing containerd data if it exists and hasn't been moved yet
+  if [ -d /var/lib/containerd ] && [ ! -L /var/lib/containerd ]; then
+    echo "Moving existing containerd data to NVMe..."
+    cp -a /var/lib/containerd/* /mnt/nvme/containerd/ 2>/dev/null || true
+    mv /var/lib/containerd /var/lib/containerd.old
+  fi
+
+  # Create symlink from /var/lib/containerd to NVMe location
+  ln -sf /mnt/nvme/containerd /var/lib/containerd
+
+  # Restart containerd
+  systemctl start containerd
+
+  echo "NVMe successfully mounted and containerd configured to use it"
+  df -h /mnt/nvme
+  ls -la /var/lib/containerd
+else
+  echo "No NVMe device found - using default storage on root volume"
+fi
+
+--==MYBOUNDARY==--
+  EOF
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(
+      var.tags,
+      {
+        Name = "${var.cluster_name}-main-node"
+      }
+    )
+  }
+}
+
+# Main Node Group (Legacy 2-node architecture)
+# Only created if use_three_node_groups = false
 resource "aws_eks_node_group" "main" {
+  count = var.use_three_node_groups ? 0 : 1
+
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.cluster_name}-main"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = var.subnet_ids
+  subnet_ids      = var.main_node_subnet_ids != null ? var.main_node_subnet_ids : var.subnet_ids
 
   instance_types = var.main_node_instance_types
+  capacity_type  = var.main_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+
+  # Use the launch template with NVMe mounting script
+  launch_template {
+    id      = aws_launch_template.main.id
+    version = "$Latest"
+  }
 
   scaling_config {
     desired_size = var.main_node_desired_size
@@ -235,13 +343,18 @@ resource "aws_eks_node_group" "main" {
 
   labels = {
     role = "main"
-    type = "on-demand"
+    type = var.main_enable_spot_instances ? "spot" : "on-demand"
   }
+
+  # NOTE: No taint on main nodes - system pods (CoreDNS, EBS CSI) need to run here
+  # Taints are only applied to dask_workers node group below
 
   tags = merge(
     var.tags,
     {
-      Name = "${var.cluster_name}-main-node"
+      Name                                        = "${var.cluster_name}-main-node"
+      "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+      "k8s.io/cluster-autoscaler/enabled"         = "true"
     }
   )
 
@@ -252,6 +365,200 @@ resource "aws_eks_node_group" "main" {
   ]
 }
 
+# System Node Group (3-node architecture)
+# Always running, runs Hub, Kubecost, Prometheus, system pods
+resource "aws_eks_node_group" "system" {
+  count = var.use_three_node_groups ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-system"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  instance_types = var.system_node_instance_types
+  capacity_type  = var.system_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+
+  scaling_config {
+    desired_size = var.system_node_desired_size
+    max_size     = var.system_node_max_size
+    min_size     = var.system_node_min_size
+  }
+
+  update_config {
+    max_unavailable_percentage = 33
+  }
+
+  labels = {
+    role = "system"
+    type = var.system_enable_spot_instances ? "spot" : "on-demand"
+  }
+
+  # Taint to prevent user pods from scheduling on system node
+  taint {
+    key    = "system"
+    value  = "true"
+    effect = "NoSchedule"
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.cluster_name}-system-node"
+      # System nodes don't autoscale
+    }
+  )
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policy,
+    aws_iam_role_policy_attachment.node_cni_policy,
+    aws_iam_role_policy_attachment.node_registry_policy
+  ]
+}
+
+# User Node Group (3-node architecture)
+# Scale to zero, runs JupyterHub user pods
+resource "aws_eks_node_group" "user" {
+  count = var.use_three_node_groups ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-user"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  instance_types = var.user_node_instance_types
+  capacity_type  = var.user_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+
+  scaling_config {
+    desired_size = var.user_node_desired_size
+    max_size     = var.user_node_max_size
+    min_size     = var.user_node_min_size
+  }
+
+  update_config {
+    max_unavailable_percentage = 33
+  }
+
+  labels = {
+    role = "user"
+    type = var.user_enable_spot_instances ? "spot" : "on-demand"
+  }
+
+  # No taint - user pods welcome here
+
+  tags = merge(
+    var.tags,
+    {
+      Name                                            = "${var.cluster_name}-user-node"
+      "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+      "k8s.io/cluster-autoscaler/enabled"             = "true"
+    }
+  )
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policy,
+    aws_iam_role_policy_attachment.node_cni_policy,
+    aws_iam_role_policy_attachment.node_registry_policy
+  ]
+}
+
+# Launch Template for Dask Worker Node Group (with NVMe mounting)
+resource "aws_launch_template" "dask_workers" {
+  name_prefix = "${var.cluster_name}-dask-"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size = 50  # Smaller root volume since we have NVMe
+      volume_type = "gp3"
+      encrypted   = true
+    }
+  }
+
+  # User data script in MIME multipart format (required for EKS managed node groups)
+  # NOTE: Do NOT call bootstrap.sh - EKS managed node groups handle this automatically
+  user_data = base64encode(<<-EOF
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+--==MYBOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+set -ex
+
+# DO NOT call /etc/eks/bootstrap.sh here - EKS managed node groups handle it automatically
+# Mount NVMe storage and configure containerd to use it
+
+echo "Starting NVMe mount and containerd configuration script for Dask worker..."
+
+# Wait for NVMe devices to be available
+sleep 5
+
+# Find the NVMe device (not the root device)
+NVME_DEVICE=$(lsblk -d -n | grep nvme | grep -v nvme0n1 | head -1 | awk '{print "/dev/"$1}')
+
+if [ ! -z "$NVME_DEVICE" ]; then
+  echo "Found NVMe device: $NVME_DEVICE"
+
+  # Check if already formatted
+  if ! blkid $NVME_DEVICE; then
+    echo "Formatting $NVME_DEVICE with ext4..."
+    mkfs -t ext4 $NVME_DEVICE
+  fi
+
+  # Mount to /mnt/nvme
+  mkdir -p /mnt/nvme
+  mount $NVME_DEVICE /mnt/nvme
+  chmod 755 /mnt/nvme
+
+  # Add to fstab for persistence
+  if ! grep -q "$NVME_DEVICE" /etc/fstab; then
+    echo "$NVME_DEVICE /mnt/nvme ext4 defaults,noatime 0 0" >> /etc/fstab
+  fi
+
+  # Create containerd directories on NVMe
+  mkdir -p /mnt/nvme/containerd
+  chmod 711 /mnt/nvme/containerd
+
+  # Stop containerd before moving data
+  systemctl stop containerd || true
+
+  # Move existing containerd data if it exists and hasn't been moved yet
+  if [ -d /var/lib/containerd ] && [ ! -L /var/lib/containerd ]; then
+    echo "Moving existing containerd data to NVMe..."
+    cp -a /var/lib/containerd/* /mnt/nvme/containerd/ 2>/dev/null || true
+    mv /var/lib/containerd /var/lib/containerd.old
+  fi
+
+  # Create symlink from /var/lib/containerd to NVMe location
+  ln -sf /mnt/nvme/containerd /var/lib/containerd
+
+  # Restart containerd
+  systemctl start containerd
+
+  echo "NVMe successfully mounted and containerd configured to use it for Dask worker"
+  df -h /mnt/nvme
+  ls -la /var/lib/containerd
+else
+  echo "No NVMe device found - using default storage on root volume"
+fi
+
+--==MYBOUNDARY==--
+  EOF
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(
+      var.tags,
+      {
+        Name = "${var.cluster_name}-dask-worker"
+      }
+    )
+  }
+}
+
 # Dask Worker Node Group
 resource "aws_eks_node_group" "dask_workers" {
   cluster_name    = aws_eks_cluster.main.name
@@ -260,7 +567,13 @@ resource "aws_eks_node_group" "dask_workers" {
   subnet_ids      = var.subnet_ids
 
   instance_types = var.dask_node_instance_types
-  capacity_type  = var.enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  capacity_type  = var.dask_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+
+  # Use the launch template with NVMe mounting script
+  launch_template {
+    id      = aws_launch_template.dask_workers.id
+    version = "$Latest"
+  }
 
   scaling_config {
     desired_size = var.dask_node_desired_size
@@ -274,11 +587,11 @@ resource "aws_eks_node_group" "dask_workers" {
 
   labels = {
     role     = "dask-worker"
-    type     = var.enable_spot_instances ? "spot" : "on-demand"
+    type     = var.dask_enable_spot_instances ? "spot" : "on-demand"
     workload = "dask"
   }
 
-  taints {
+  taint {
     key    = "lifecycle"
     value  = "spot"
     effect = "NO_EXECUTE"
@@ -287,7 +600,9 @@ resource "aws_eks_node_group" "dask_workers" {
   tags = merge(
     var.tags,
     {
-      Name = "${var.cluster_name}-dask-worker-node"
+      Name                                        = "${var.cluster_name}-dask-worker-node"
+      "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+      "k8s.io/cluster-autoscaler/enabled"         = "true"
     }
   )
 
@@ -313,6 +628,11 @@ resource "aws_eks_addon" "coredns" {
   resolve_conflicts_on_create = "OVERWRITE"
 
   tags = var.tags
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_node_group.system
+  ]
 }
 
 resource "aws_eks_addon" "kube_proxy" {
@@ -321,6 +641,11 @@ resource "aws_eks_addon" "kube_proxy" {
   resolve_conflicts_on_create = "OVERWRITE"
 
   tags = var.tags
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_node_group.system
+  ]
 }
 
 resource "aws_eks_addon" "ebs_csi_driver" {
@@ -329,6 +654,11 @@ resource "aws_eks_addon" "ebs_csi_driver" {
   resolve_conflicts_on_create = "OVERWRITE"
 
   tags = var.tags
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_node_group.system
+  ]
 }
 
 resource "aws_eks_addon" "pod_identity" {
@@ -337,6 +667,11 @@ resource "aws_eks_addon" "pod_identity" {
   resolve_conflicts_on_create = "OVERWRITE"
 
   tags = var.tags
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_node_group.system
+  ]
 }
 
 # Cluster Autoscaler IRSA
@@ -350,8 +685,8 @@ module "cluster_autoscaler_irsa" {
 
   policy_statements = [
     {
-      effect = "Allow"
-      actions = [
+      Effect = "Allow"
+      Action = [
         "autoscaling:DescribeAutoScalingGroups",
         "autoscaling:DescribeAutoScalingInstances",
         "autoscaling:DescribeLaunchConfigurations",
@@ -363,22 +698,20 @@ module "cluster_autoscaler_irsa" {
         "ec2:GetInstanceTypesFromInstanceRequirements",
         "eks:DescribeNodegroup"
       ]
-      resources = ["*"]
+      Resource = "*"
     },
     {
-      effect = "Allow"
-      actions = [
+      Effect = "Allow"
+      Action = [
         "autoscaling:SetDesiredCapacity",
         "autoscaling:TerminateInstanceInAutoScalingGroup"
       ]
-      resources = ["*"]
-      conditions = [
-        {
-          test     = "StringEquals"
-          variable = "autoscaling:ResourceTag/kubernetes.io/cluster/${var.cluster_name}"
-          values   = ["owned"]
+      Resource = "*"
+      Condition = {
+        StringEquals = {
+          "autoscaling:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
         }
-      ]
+      }
     }
   ]
 

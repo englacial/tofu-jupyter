@@ -22,8 +22,14 @@ variable "vpc_id" {
 }
 
 variable "subnet_ids" {
-  description = "Subnet IDs for the cluster"
+  description = "Subnet IDs for the cluster and dask worker nodes"
   type        = list(string)
+}
+
+variable "main_node_subnet_ids" {
+  description = "Subnet IDs for main node group (optionally single AZ for EBS volume affinity)"
+  type        = list(string)
+  default     = null
 }
 
 variable "kms_key_id" {
@@ -73,8 +79,14 @@ variable "dask_node_max_size" {
   type        = number
 }
 
-variable "enable_spot_instances" {
-  description = "Use spot instances for Dask workers"
+variable "main_enable_spot_instances" {
+  description = "Use spot instances for main node group (NOT recommended - causes JupyterHub instability)"
+  type        = bool
+  default     = false
+}
+
+variable "dask_enable_spot_instances" {
+  description = "Use spot instances for Dask worker node group (recommended for cost savings)"
   type        = bool
   default     = true
 }
@@ -83,4 +95,71 @@ variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
   default     = {}
+}
+
+# 3-Node-Group Architecture Variables
+variable "use_three_node_groups" {
+  description = "Use 3-node-group architecture (system, user, worker)"
+  type        = bool
+  default     = false
+}
+
+variable "system_node_instance_types" {
+  description = "Instance types for system node group"
+  type        = list(string)
+  default     = ["r5.large"]
+}
+
+variable "system_node_min_size" {
+  description = "Minimum size of system node group"
+  type        = number
+  default     = 1
+}
+
+variable "system_node_desired_size" {
+  description = "Desired size of system node group"
+  type        = number
+  default     = 1
+}
+
+variable "system_node_max_size" {
+  description = "Maximum size of system node group"
+  type        = number
+  default     = 1
+}
+
+variable "system_enable_spot_instances" {
+  description = "Use spot instances for system node group"
+  type        = bool
+  default     = false
+}
+
+variable "user_node_instance_types" {
+  description = "Instance types for user node group"
+  type        = list(string)
+  default     = ["r5.xlarge"]
+}
+
+variable "user_node_min_size" {
+  description = "Minimum size of user node group"
+  type        = number
+  default     = 0
+}
+
+variable "user_node_desired_size" {
+  description = "Desired size of user node group"
+  type        = number
+  default     = 0
+}
+
+variable "user_node_max_size" {
+  description = "Maximum size of user node group"
+  type        = number
+  default     = 10
+}
+
+variable "user_enable_spot_instances" {
+  description = "Use spot instances for user node group"
+  type        = bool
+  default     = false
 }

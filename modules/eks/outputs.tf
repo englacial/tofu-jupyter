@@ -51,13 +51,33 @@ output "node_iam_role_arn" {
 }
 
 output "main_node_group_id" {
-  description = "EKS node group ID for main nodes"
-  value       = aws_eks_node_group.main.id
+  description = "EKS node group ID for main nodes (legacy 2-node architecture)"
+  value       = try(aws_eks_node_group.main[0].id, null)
 }
 
 output "main_node_group_status" {
-  description = "Status of the main node group"
-  value       = aws_eks_node_group.main.status
+  description = "Status of the main node group (legacy 2-node architecture)"
+  value       = try(aws_eks_node_group.main[0].status, null)
+}
+
+output "system_node_group_id" {
+  description = "EKS node group ID for system nodes (3-node architecture)"
+  value       = try(aws_eks_node_group.system[0].id, null)
+}
+
+output "system_node_group_status" {
+  description = "Status of the system node group (3-node architecture)"
+  value       = try(aws_eks_node_group.system[0].status, null)
+}
+
+output "user_node_group_id" {
+  description = "EKS node group ID for user nodes (3-node architecture)"
+  value       = try(aws_eks_node_group.user[0].id, null)
+}
+
+output "user_node_group_status" {
+  description = "Status of the user node group (3-node architecture)"
+  value       = try(aws_eks_node_group.user[0].status, null)
 }
 
 output "dask_node_group_id" {
@@ -82,5 +102,5 @@ output "kubectl_config_command" {
 
 output "cluster_autoscaler_arn" {
   description = "ARN of the cluster autoscaler IAM role"
-  value       = module.cluster_autoscaler_irsa.iam_role_arn
+  value       = module.cluster_autoscaler_irsa.role_arn
 }

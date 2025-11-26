@@ -12,9 +12,32 @@ NC='\033[0m' # No Color
 
 # Configuration
 ENV=${1:-dev}
-REGION=${2:-us-west-2}
-BUCKET_NAME="terraform-state-jupyterhub-${ENV}"
-DYNAMODB_TABLE="terraform-state-lock-${ENV}"
+
+# Get AWS account ID for unique bucket naming
+ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+
+# Try to read region from terraform.tfvars first, fallback to argument or default
+TFVARS_PATH="$(dirname "$0")/../environments/${ENV}/terraform.tfvars"
+if [ -f "${TFVARS_PATH}" ]; then
+    REGION=$(grep '^region' "${TFVARS_PATH}" | awk '{print $3}' | tr -d '"' | head -1)
+    echo -e "${YELLOW}Using region from terraform.tfvars: ${REGION}${NC}"
+fi
+
+# If still not set, use provided argument or default
+REGION=${REGION:-${2:-us-west-2}}
+
+# Check if backend.tfvars already exists and read from it
+BACKEND_CONFIG="$(dirname "$0")/../environments/${ENV}/backend.tfvars"
+if [ -f "${BACKEND_CONFIG}" ]; then
+    echo -e "${YELLOW}Reading configuration from existing backend.tfvars${NC}"
+    BUCKET_NAME=$(grep '^bucket' "${BACKEND_CONFIG}" | awk '{print $3}' | tr -d '"')
+    DYNAMODB_TABLE=$(grep '^dynamodb_table' "${BACKEND_CONFIG}" | awk '{print $3}' | tr -d '"')
+    REGION=$(grep '^region' "${BACKEND_CONFIG}" | awk '{print $3}' | tr -d '"')
+else
+    # Use defaults with account ID for global uniqueness
+    BUCKET_NAME="tofu-state-jupyterhub-${ENV}-${ACCOUNT_ID}"
+    DYNAMODB_TABLE="tofu-state-lock-${ENV}"
+fi
 
 echo -e "${GREEN}Bootstrapping Terraform backend for environment: ${ENV}${NC}"
 echo "Region: ${REGION}"
@@ -84,33 +107,35 @@ else
     echo -e "${GREEN}DynamoDB table created successfully${NC}"
 fi
 
-# Create backend configuration file
-BACKEND_CONFIG="../environments/${ENV}/backend.tfvars"
-echo -e "${YELLOW}Creating backend configuration...${NC}"
-cat > "${BACKEND_CONFIG}" << EOF
-# Terraform Backend Configuration - ${ENV}
-# This configures where Terraform state is stored
-# Generated on $(date)
-
+# Create backend configuration file only if it doesn't exist
+if [ ! -f "${BACKEND_CONFIG}" ]; then
+    echo -e "${YELLOW}Creating backend configuration...${NC}"
+    cat > "${BACKEND_CONFIG}" << EOF
 bucket         = "${BUCKET_NAME}"
-key            = "jupyterhub/terraform.tfstate"
+key            = "terraform.tfstate"
 region         = "${REGION}"
 encrypt        = true
 dynamodb_table = "${DYNAMODB_TABLE}"
 EOF
-
-echo -e "${GREEN}Backend configuration written to ${BACKEND_CONFIG}${NC}"
+    echo -e "${GREEN}Backend configuration written to ${BACKEND_CONFIG}${NC}"
+else
+    echo -e "${GREEN}Backend configuration already exists at ${BACKEND_CONFIG}${NC}"
+fi
 
 # Create KMS key for SOPS (optional)
-echo -e "${YELLOW}Creating KMS key for SOPS...${NC}"
+echo -e "${YELLOW}Checking KMS key for SOPS...${NC}"
 KMS_ALIAS="alias/sops-jupyterhub-${ENV}"
+
+# Try to get existing key
 if aws kms describe-alias --alias-name "${KMS_ALIAS}" --region "${REGION}" >/dev/null 2>&1; then
     echo "KMS alias ${KMS_ALIAS} already exists"
-    KMS_KEY_ID=$(aws kms describe-alias --alias-name "${KMS_ALIAS}" --region "${REGION}" --query 'AliasArn' --output text)
+    KMS_KEY_ARN=$(aws kms describe-alias --alias-name "${KMS_ALIAS}" --region "${REGION}" --query 'TargetKeyId' --output text)
+    KMS_KEY_ARN=$(aws kms describe-key --key-id "${KMS_KEY_ARN}" --region "${REGION}" --query 'KeyMetadata.Arn' --output text)
 else
+    echo "Creating new KMS key..."
     KMS_KEY_ID=$(aws kms create-key \
-        --description "SOPS key for Terra JupyterHub ${ENV}" \
-        --tags TagKey=Environment,TagValue="${ENV}" TagKey=Application,TagValue=jupyterhub-terraform \
+        --description "SOPS key for JupyterHub ${ENV}" \
+        --tags TagKey=Environment,TagValue="${ENV}" TagKey=Application,TagValue=jupyterhub \
         --region "${REGION}" \
         --query 'KeyMetadata.KeyId' \
         --output text)
@@ -118,43 +143,40 @@ else
     aws kms create-alias \
         --alias-name "${KMS_ALIAS}" \
         --target-key-id "${KMS_KEY_ID}" \
-        --region "${REGION}"
+        --region "${REGION}" 2>/dev/null || true
 
-    echo -e "${GREEN}KMS key created: ${KMS_KEY_ID}${NC}"
+    KMS_KEY_ARN=$(aws kms describe-key --key-id "${KMS_KEY_ID}" --region "${REGION}" --query 'KeyMetadata.Arn' --output text)
+    echo -e "${GREEN}KMS key created: ${KMS_KEY_ARN}${NC}"
 fi
 
-# Get KMS key ARN
-KMS_ARN=$(aws kms describe-key --key-id "${KMS_KEY_ID}" --region "${REGION}" --query 'KeyMetadata.Arn' --output text)
-
-# Create SOPS configuration
-SOPS_CONFIG="../environments/${ENV}/.sops.yaml"
-echo -e "${YELLOW}Creating SOPS configuration...${NC}"
-cat > "${SOPS_CONFIG}" << EOF
-# SOPS Configuration for ${ENV}
-creation_rules:
-  - kms: ${KMS_ARN}
-EOF
-
-echo -e "${GREEN}SOPS configuration written to ${SOPS_CONFIG}${NC}"
+# Note: SOPS configuration managed at project level in .sops.yaml
+echo -e "${YELLOW}Note: Add the following to your .sops.yaml:${NC}"
+echo ""
+echo "  - path_regex: environments/${ENV}/secrets\\.yaml\$"
+echo "    kms: ${KMS_ARN}"
+echo ""
 
 # Summary
 echo ""
 echo -e "${GREEN}=== Bootstrap Complete ===${NC}"
 echo ""
-echo "Backend resources created:"
+echo "Backend resources:"
 echo "  S3 Bucket: ${BUCKET_NAME}"
 echo "  DynamoDB Table: ${DYNAMODB_TABLE}"
 echo "  KMS Key: ${KMS_ARN}"
+echo "  Region: ${REGION}"
 echo ""
 echo "Next steps:"
-echo "1. Copy secrets.yaml.example to secrets.yaml:"
-echo "   cp environments/${ENV}/secrets.yaml.example environments/${ENV}/secrets.yaml"
+echo "1. Create secrets file:"
+echo "   cat > environments/${ENV}/secrets.yaml << 'EOF'"
+echo "   cognito:"
+echo "       client_secret: test-secret-change-me"
+echo "   github:"
+echo "       token: \"\""
+echo "   EOF"
 echo ""
-echo "2. Edit and encrypt secrets:"
+echo "2. Encrypt secrets:"
 echo "   sops -e -i environments/${ENV}/secrets.yaml"
 echo ""
-echo "3. Initialize Terraform:"
-echo "   make init ENV=${ENV}"
-echo ""
-echo "4. Deploy infrastructure:"
-echo "   make deploy ENV=${ENV}"
+echo "3. Deploy infrastructure:"
+echo "   make apply ENVIRONMENT=${ENV}"

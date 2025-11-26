@@ -18,8 +18,6 @@ override.tf.json
 terraform.rc
 
 # Temporary and generated files
-generated-resources.tf
-imports/
 *.backup
 *.bak
 *.swp
@@ -51,3 +49,19 @@ __pycache__/
 # Temporary directories
 tmp/
 temp/
+
+# Import-related files (may contain sensitive data)
+import-workspace/
+imports/
+import-resources.tf
+existing-cluster.tf
+generated-resources.tf
+import-secrets.yaml
+import-secrets.enc.yaml
+
+# Root-level tfvars (contain account-specific data)
+/terraform.tfvars
+/backend.tfvars
+
+# Import-generated tfvars
+import-*.tfvars

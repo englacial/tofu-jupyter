@@ -25,9 +25,8 @@ terraform {
     }
   }
 
-  # Backend configuration loaded from backend.tfvars
+  # Backend configuration is defined in backend.tf and configured via backend.tfvars
   # OpenTofu supports native state encryption configured in encryption.tf
-  backend "s3" {}
 }
 
 # Import native encryption configuration for OpenTofu
@@ -50,7 +49,7 @@ provider "kubernetes" {
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.region]
+    args        = ["eks", "get-token", "--cluster-name", local.cluster_name, "--region", var.region]
   }
 }
 
@@ -62,7 +61,7 @@ provider "helm" {
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.region]
+      args        = ["eks", "get-token", "--cluster-name", local.cluster_name, "--region", var.region]
     }
   }
 }
@@ -88,11 +87,10 @@ locals {
 
   # Extract secrets
   cognito_client_secret = data.sops_file.secrets.data["cognito.client_secret"]
-  github_token         = try(data.sops_file.secrets.data["github.token"], "")
+  github_token          = try(data.sops_file.secrets.data["github.token"], "")
 
   # Cost optimization flags
   enable_nat_gateway = var.enable_nat_gateway
-  enable_spot_instances = var.enable_spot_instances
 
   # Node group configuration
   main_node_config = {
@@ -119,12 +117,12 @@ module "networking" {
   source = "./modules/networking"
 
   cluster_name       = local.cluster_name
-  region            = var.region
+  region             = var.region
   availability_zones = data.aws_availability_zones.available.names
-  vpc_cidr          = var.vpc_cidr
+  vpc_cidr           = var.vpc_cidr
   enable_nat_gateway = local.enable_nat_gateway
   single_nat_gateway = var.single_nat_gateway
-  tags              = local.common_tags
+  tags               = local.common_tags
 }
 
 # Module: KMS
@@ -133,49 +131,55 @@ module "kms" {
 
   cluster_name = local.cluster_name
   environment  = var.environment
-  tags        = local.common_tags
+  tags         = local.common_tags
 }
 
-# Module: Cognito
+# Module: Cognito (only for JupyterHub deployments)
 module "cognito" {
+  count  = var.enable_jupyterhub ? 1 : 0
   source = "./modules/cognito"
 
   cluster_name = local.cluster_name
   domain_name  = var.domain_name
   environment  = var.environment
   admin_email  = var.admin_email
-  tags        = local.common_tags
+  tags         = local.common_tags
 }
 
 # Module: S3
 module "s3" {
   source = "./modules/s3"
 
-  cluster_name    = local.cluster_name
-  environment     = var.environment
-  force_destroy   = var.force_destroy_s3
-  lifecycle_days  = var.s3_lifecycle_days
+  cluster_name   = local.cluster_name
+  environment    = var.environment
+  force_destroy  = var.force_destroy_s3
+  lifecycle_days = var.s3_lifecycle_days
   tags           = local.common_tags
 }
 
 # Module: ACM Certificate
 module "acm" {
+  count  = var.enable_acm ? 1 : 0
   source = "./modules/acm"
 
-  domain_name = var.domain_name
-  tags       = local.common_tags
+  domain_name        = var.domain_name
+  enable_wildcard    = var.acm_enable_wildcard
+  auto_validate      = var.acm_auto_validate
+  validation_timeout = var.acm_validation_timeout
+  tags               = local.common_tags
 }
 
 # Module: EKS
 module "eks" {
   source = "./modules/eks"
 
-  cluster_name     = local.cluster_name
-  cluster_version  = var.kubernetes_version
-  region          = var.region
-  vpc_id          = module.networking.vpc_id
-  subnet_ids      = module.networking.private_subnet_ids
-  kms_key_id      = module.kms.key_id
+  cluster_name         = local.cluster_name
+  cluster_version      = var.kubernetes_version
+  region               = var.region
+  vpc_id               = module.networking.vpc_id
+  subnet_ids           = module.networking.private_subnet_ids
+  main_node_subnet_ids = var.pin_main_nodes_single_az ? module.networking.first_private_subnet_id : null
+  kms_key_id           = module.kms.key_id
 
   # Node groups
   main_node_instance_types = var.main_node_instance_types
@@ -188,7 +192,8 @@ module "eks" {
   dask_node_desired_size   = local.dask_node_config.desired_size
   dask_node_max_size       = local.dask_node_config.max_size
 
-  enable_spot_instances = local.enable_spot_instances
+  main_enable_spot_instances = var.main_enable_spot_instances
+  dask_enable_spot_instances = var.dask_enable_spot_instances
 
   tags = local.common_tags
 
@@ -199,9 +204,10 @@ module "eks" {
 module "kubernetes" {
   source = "./modules/kubernetes"
 
-  cluster_name = local.cluster_name
-  s3_bucket    = module.s3.bucket_name
-  kms_key_id   = module.kms.key_id
+  cluster_name      = local.cluster_name
+  s3_bucket         = module.s3.bucket_name
+  kms_key_id        = module.kms.key_id
+  oidc_provider_arn = module.eks.oidc_provider_arn
 
   depends_on = [module.eks]
 }
@@ -211,20 +217,27 @@ module "helm" {
   source = "./modules/helm"
 
   cluster_name          = local.cluster_name
-  domain_name          = var.domain_name
-  certificate_arn      = module.acm.certificate_arn
-  s3_bucket            = module.s3.bucket_name
-  cognito_client_id    = module.cognito.client_id
-  cognito_client_secret = local.cognito_client_secret
-  cognito_domain       = module.cognito.domain
-  cognito_user_pool_id = module.cognito.user_pool_id
-  admin_email          = var.admin_email
+  domain_name           = var.domain_name
+  certificate_arn       = var.enable_acm ? module.acm[0].certificate_arn : ""
+  s3_bucket             = module.s3.bucket_name
+  cognito_client_id     = var.enable_jupyterhub ? module.cognito[0].client_id : ""
+  cognito_client_secret = var.enable_jupyterhub ? local.cognito_client_secret : ""
+  cognito_domain        = var.enable_jupyterhub ? module.cognito[0].domain : ""
+  cognito_user_pool_id  = var.enable_jupyterhub ? module.cognito[0].user_pool_id : ""
+  admin_email           = var.admin_email
+
+  # Deployment type
+  enable_jupyterhub = var.enable_jupyterhub
+
+  # Container image configuration
+  singleuser_image_name = var.singleuser_image_name
+  singleuser_image_tag  = var.singleuser_image_tag
 
   # Resource limits
   user_cpu_guarantee    = var.user_cpu_guarantee
-  user_cpu_limit       = var.user_cpu_limit
+  user_cpu_limit        = var.user_cpu_limit
   user_memory_guarantee = var.user_memory_guarantee
-  user_memory_limit    = var.user_memory_limit
+  user_memory_limit     = var.user_memory_limit
 
   # Dask configuration
   dask_worker_cores_max  = var.dask_worker_cores_max
@@ -235,7 +248,11 @@ module "helm" {
   kernel_cull_timeout = var.kernel_cull_timeout
   server_cull_timeout = var.server_cull_timeout
 
-  depends_on = [module.kubernetes, module.cognito, module.acm]
+  # Cluster autoscaler
+  region                      = var.region
+  cluster_autoscaler_role_arn = module.eks.cluster_autoscaler_arn
+
+  depends_on = [module.kubernetes]
 }
 
 # Module: Monitoring (Optional)
@@ -244,8 +261,8 @@ module "monitoring" {
   source = "./modules/monitoring"
 
   cluster_name = local.cluster_name
-  region      = var.region
-  tags        = local.common_tags
+  region       = var.region
+  tags         = local.common_tags
 
   depends_on = [module.eks]
 }
@@ -259,7 +276,7 @@ module "auto_shutdown" {
   environment       = var.environment
   shutdown_schedule = var.shutdown_schedule
   startup_schedule  = var.startup_schedule
-  tags             = local.common_tags
+  tags              = local.common_tags
 
   depends_on = [module.eks]
 }
