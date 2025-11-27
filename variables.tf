@@ -2,11 +2,11 @@
 
 # Core Configuration
 variable "environment" {
-  description = "Environment name (test, dev, staging, prod, dasktest, daskscale, meseeks)"
+  description = "Environment name (test, dev, staging, prod, dasktest, daskscale, meseeks, englacial, englacial-test)"
   type        = string
   validation {
-    condition     = contains(["test", "dev", "staging", "prod", "dasktest", "daskscale", "meseeks"], var.environment)
-    error_message = "Environment must be test, dev, staging, prod, dasktest, daskscale, or meseeks."
+    condition     = contains(["test", "dev", "staging", "prod", "dasktest", "daskscale", "meseeks", "englacial", "englacial-test"], var.environment)
+    error_message = "Environment must be test, dev, staging, prod, dasktest, daskscale, meseeks, englacial, or englacial-test."
   }
 }
 
@@ -228,12 +228,6 @@ variable "dask_node_max_size" {
   default     = 30
 }
 
-variable "main_enable_spot_instances" {
-  description = "Use spot instances for main node group (NOT recommended - causes JupyterHub instability)"
-  type        = bool
-  default     = false
-}
-
 variable "dask_enable_spot_instances" {
   description = "Use spot instances for Dask worker node group (recommended for cost savings)"
   type        = bool
@@ -366,6 +360,38 @@ variable "enable_kubecost" {
   description = "Enable Kubecost cost monitoring with AWS CUR integration"
   type        = bool
   default     = false
+}
+
+variable "kubecost_expose_public" {
+  description = "Expose Kubecost UI via public LoadBalancer (vs kubectl port-forward)"
+  type        = bool
+  default     = false
+}
+
+variable "kubecost_enable_auth" {
+  description = "Enable basic authentication for Kubecost UI"
+  type        = bool
+  default     = false
+}
+
+variable "kubecost_auth_password" {
+  description = "Password for Kubecost basic auth (username: admin)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# GitHub OAuth Authentication
+variable "github_enabled" {
+  description = "Enable GitHub OAuth authentication"
+  type        = bool
+  default     = false
+}
+
+variable "github_org_whitelist" {
+  description = "GitHub organization name to restrict access (leave empty for no restriction)"
+  type        = string
+  default     = ""
 }
 
 # Backup Configuration

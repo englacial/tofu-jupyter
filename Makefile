@@ -143,6 +143,10 @@ shell-hub: kubeconfig ## Open shell in hub pod
 
 ##@ Cost Management
 
+kubecost-ui: kubeconfig ## Open Kubecost UI for cost monitoring
+	@echo -e "$(GREEN)Opening Kubecost UI for environment: $(ENVIRONMENT)$(NC)"
+	@./scripts/kubecost-ui.sh -e $(ENVIRONMENT)
+
 cost-estimate: init ## Estimate costs (requires Infracost)
 	@command -v infracost >/dev/null 2>&1 || { echo "Infracost not installed. See: https://www.infracost.io/docs/"; exit 1; }
 	@echo -e "$(GREEN)Estimating costs for environment: $(ENVIRONMENT)$(NC)"

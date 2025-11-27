@@ -32,6 +32,10 @@ resource "helm_release" "daskhub" {
             limit     = var.user_memory_limit
             guarantee = var.user_memory_guarantee
           }
+          # Node affinity - user pods run on user nodes (3-node) or main nodes (2-node)
+          nodeSelector = {
+            role = var.use_three_node_groups ? "user" : "main"
+          }
           extraEnv = {
             DASK_GATEWAY__ADDRESS                 = "http://proxy-public/services/dask-gateway"
             DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE = "{{JUPYTER_IMAGE_SPEC}}"
@@ -59,38 +63,84 @@ resource "helm_release" "daskhub" {
           }
         }
         proxy = {
+          # Note: For ALB-terminated SSL, we do NOT enable JupyterHub's HTTPS
+          # The ALB handles SSL termination, JupyterHub receives HTTP
           https = {
-            enabled = var.certificate_arn != ""
+            enabled = false  # ALB terminates SSL, not JupyterHub
           }
           service = {
             type = "LoadBalancer"
+            # AWS LoadBalancer annotations for HTTPS (ALB-terminated)
+            annotations = var.certificate_arn != "" ? {
+              "service.beta.kubernetes.io/aws-load-balancer-ssl-cert" = var.certificate_arn
+              "service.beta.kubernetes.io/aws-load-balancer-ssl-ports" = "443"
+              "service.beta.kubernetes.io/aws-load-balancer-backend-protocol" = "http"
+            } : {}
+            # Expose both HTTP (80) and HTTPS (443) ports
+            extraPorts = var.certificate_arn != "" ? [
+              {
+                name       = "https"
+                port       = 443
+                targetPort = "http"  # Backend still uses HTTP, SSL terminates at LB
+              }
+            ] : []
+          }
+          # Node affinity - proxy runs on system nodes (3-node) or main nodes (2-node)
+          chp = {
+            nodeSelector = {
+              role = var.use_three_node_groups ? "system" : "main"
+            }
+            # No tolerations needed - system nodes don't have taints
           }
         }
         hub = {
           shutdownOnLogout = true
-          config = merge(
-            {
-              Authenticator = {
-                allow_all   = var.allow_all_users
-                admin_users = var.admin_users
-              }
-            },
-            var.cognito_enabled ? {
-              GenericOAuthenticator = {
-                client_id          = var.cognito_client_id
-                oauth_callback_url = "https://${var.domain_name}/hub/oauth_callback"
-                authorize_url      = var.cognito_authorize_url
-                token_url          = var.cognito_token_url
-                userdata_url       = var.cognito_userdata_url
-                logout_redirect_url = var.cognito_logout_url
-                login_service      = "AWS Cognito"
-                username_claim     = "email"
-              }
-              JupyterHub = {
-                authenticator_class = "generic-oauth"
-              }
-            } : {}
-          )
+          # Node affinity - hub runs on system nodes (3-node) or main nodes (2-node)
+          nodeSelector = {
+            role = var.use_three_node_groups ? "system" : "main"
+          }
+          # No tolerations needed - system nodes don't have taints
+          config = {
+            Authenticator = {
+              allow_all   = var.allow_all_users
+              admin_users = var.admin_users
+            }
+            # GitHub OAuth Configuration
+            GitHubOAuthenticator = var.github_enabled ? {
+              client_id             = var.github_client_id
+              client_secret         = var.github_client_secret
+              oauth_callback_url    = var.certificate_arn != "" ? "https://${var.domain_name}/hub/oauth_callback" : "http://${var.domain_name}/hub/oauth_callback"
+              allowed_organizations = var.github_org_whitelist != "" ? [var.github_org_whitelist] : []
+            } : {
+              client_id             = ""
+              client_secret         = ""
+              oauth_callback_url    = ""
+              allowed_organizations = []
+            }
+            # Cognito OAuth Configuration (legacy)
+            GenericOAuthenticator = var.cognito_enabled ? {
+              client_id           = var.cognito_client_id
+              oauth_callback_url  = "https://${var.domain_name}/hub/oauth_callback"
+              authorize_url       = var.cognito_authorize_url
+              token_url           = var.cognito_token_url
+              userdata_url        = var.cognito_userdata_url
+              logout_redirect_url = var.cognito_logout_url
+              login_service       = "AWS Cognito"
+              username_claim      = "email"
+            } : {
+              client_id           = ""
+              oauth_callback_url  = ""
+              authorize_url       = ""
+              token_url           = ""
+              userdata_url        = ""
+              logout_redirect_url = ""
+              login_service       = ""
+              username_claim      = ""
+            }
+            JupyterHub = {
+              authenticator_class = var.github_enabled ? "github" : (var.cognito_enabled ? "generic-oauth" : "dummy")
+            }
+          }
         }
       }
       # Dask Gateway Configuration

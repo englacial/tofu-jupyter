@@ -45,9 +45,9 @@ resource "kubernetes_service_account" "kubecost" {
 # Kubecost Helm Release
 resource "helm_release" "kubecost" {
   name       = "kubecost"
-  repository = "oci://public.ecr.aws/kubecost"
+  repository = "https://kubecost.github.io/cost-analyzer/"
   chart      = "cost-analyzer"
-  version    = "2.4.1"  # Latest stable version
+  version    = "1.108.1"  # Stable version compatible with free tier
   namespace  = kubernetes_namespace.kubecost.metadata[0].name
 
   # Wait for CRDs and pods to be ready
@@ -59,75 +59,44 @@ resource "helm_release" "kubecost" {
     yamlencode({
       # Global configuration
       global = {
-        # Use Prometheus included with Kubecost (not external)
         prometheus = {
           enabled = true
           fqdn    = "http://kubecost-prometheus-server.${kubernetes_namespace.kubecost.metadata[0].name}.svc"
         }
       }
 
-      # Kubecost product configuration
-      kubecostProductConfigs = {
-        # Cluster identification
-        clusterName           = var.cluster_name
-        productKey            = ""  # Free tier (15-day retention)
-
-        # AWS Cost & Usage Report integration
-        awsServiceKeyName     = "aws-access-key-id"
-        awsServiceKeyPassword = "aws-secret-access-key"
-        awsSpotDataRegion     = var.region
-        awsSpotDataBucket     = var.cur_bucket_name
-        awsSpotDataPrefix     = var.cur_prefix
-        athenaProjectID       = data.aws_caller_identity.current.account_id
-        athenaBucketName      = var.cur_bucket_name
-        athenaRegion          = var.region
-        athenaDatabase        = "athenacurcfn_kubecost_cur"
-        athenaTable           = "kubecost_cur"
-        athenaWorkgroup       = "primary"
-
-        # Metrics configuration
-        metricsConfigs = {
-          disabledMetrics = []
-        }
-      }
-
-      # Kubecost cost-analyzer deployment
+      # Kubecost deployment configuration
       kubecostDeployment = {
-        # Use service account with IRSA
-        serviceAccount = {
-          create = false  # We created it above
-          name   = kubernetes_service_account.kubecost.metadata[0].name
-        }
-
-        # Resource requests/limits
-        resources = {
-          requests = {
-            cpu    = "200m"
-            memory = "1.5Gi"
-          }
-          limits = {
-            cpu    = "1000m"
-            memory = "2Gi"
-          }
-        }
-
-        # Node affinity - run on system nodes only
-        nodeSelector = var.node_selector
-
-        tolerations = var.tolerations
+        replicas = 1
       }
+
+      # Kubecost model configuration
+      kubecostModel = {
+        warmCache        = true
+        warmSavingsCache = true
+        etl              = true
+      }
+
+      # Service account configuration (use pre-created with IRSA)
+      serviceAccount = {
+        create = false
+        name   = kubernetes_service_account.kubecost.metadata[0].name
+      }
+
+      # Node affinity - run on system nodes only
+      nodeSelector = var.node_selector
+      tolerations  = var.tolerations
 
       # Prometheus configuration (bundled with Kubecost)
       prometheus = {
         server = {
-          # Persistent volume for metrics storage
           persistentVolume = {
-            enabled      = true
-            size         = "32Gi"
-            storageClass = "gp3"
+            enabled = true
+            size    = "32Gi"
           }
-
-          # Resource requests/limits
+          retention    = "15d"
+          nodeSelector = var.node_selector
+          tolerations  = var.tolerations
           resources = {
             requests = {
               cpu    = "500m"
@@ -138,85 +107,49 @@ resource "helm_release" "kubecost" {
               memory = "4Gi"
             }
           }
-
-          # Retention period (15 days for free tier)
-          retention = "15d"
-
-          # Node affinity - run on system nodes
-          nodeSelector = var.node_selector
-
-          tolerations = var.tolerations
-
-          # Global scrape configuration
-          global = {
-            scrape_interval = "60s"
-            evaluation_interval = "60s"
-          }
         }
-
-        # Disable alertmanager (not needed for cost monitoring)
         alertmanager = {
           enabled = false
         }
-
-        # Disable pushgateway
         pushgateway = {
           enabled = false
         }
-
-        # Node exporter for per-node metrics
         nodeExporter = {
           enabled = true
-
-          # Run on ALL nodes (daemonset)
-          nodeSelector = {}
-          tolerations = [
-            {
-              operator = "Exists"
-              effect   = "NoSchedule"
-            },
-            {
-              operator = "Exists"
-              effect   = "NoExecute"
-            }
-          ]
         }
-
-        # Kube-state-metrics for pod/deployment metrics
         kubeStateMetrics = {
           enabled = true
         }
       }
 
-      # Network costs monitoring
+      # Network costs
       networkCosts = {
         enabled = true
-
-        # Pod monitor for network metrics
-        podMonitor = {
-          enabled = true
-        }
-
-        # Node affinity
-        nodeSelector = var.node_selector
-        tolerations  = var.tolerations
       }
 
-      # Grafana (optional, disable to save resources)
+      # Grafana disabled
       grafana = {
-        enabled = false  # Kubecost has built-in UI
+        enabled = false
       }
 
-      # Ingress (disabled - use port-forward or LoadBalancer)
+      # Ingress disabled (using LoadBalancer instead)
       ingress = {
         enabled = false
       }
 
       # Service configuration
       service = {
-        type = "ClusterIP"  # Use kubectl port-forward
+        type = var.expose_via_loadbalancer ? "LoadBalancer" : "ClusterIP"
         port = 9090
+        annotations = var.expose_via_loadbalancer ? {
+          "service.beta.kubernetes.io/aws-load-balancer-type" = "nlb"
+          "service.beta.kubernetes.io/aws-load-balancer-scheme" = "internet-facing"
+        } : {}
       }
+
+      # Basic authentication (if enabled)
+      # Note: This requires creating a secret with htpasswd
+      # We'll handle this separately below
     })
   ]
 
@@ -243,3 +176,26 @@ resource "kubernetes_secret" "aws_credentials" {
 
   type = "Opaque"
 }
+
+# Basic auth secret for Kubecost UI (if enabled)
+resource "kubernetes_secret" "kubecost_basic_auth" {
+  count = var.kubecost_basic_auth_enabled ? 1 : 0
+
+  metadata {
+    name      = "kubecost-basic-auth"
+    namespace = kubernetes_namespace.kubecost.metadata[0].name
+  }
+
+  data = {
+    # htpasswd format: username:bcrypt_hash
+    # Generate with: htpasswd -nB <username>
+    # For now, using Apache MD5 which is weaker but works
+    auth = "${var.kubecost_basic_auth_username}:${bcrypt(var.kubecost_basic_auth_password)}"
+  }
+
+  type = "Opaque"
+}
+
+# Nginx sidecar for basic auth (if enabled)
+# This will be injected via Helm values as an additional container
+# Kubernetes Ingress would be better, but we're using LoadBalancer for simplicity

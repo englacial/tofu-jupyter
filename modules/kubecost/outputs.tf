@@ -21,8 +21,13 @@ output "port_forward_command" {
 }
 
 output "ui_url" {
-  description = "URL to access Kubecost UI (after port-forward)"
-  value       = "http://localhost:9090"
+  description = "URL to access Kubecost UI"
+  value       = var.expose_via_loadbalancer ? "Check 'loadbalancer_hostname' output for public URL" : "http://localhost:9090 (use port-forward)"
+}
+
+output "loadbalancer_hostname" {
+  description = "LoadBalancer hostname for Kubecost (if exposed publicly)"
+  value       = var.expose_via_loadbalancer ? "Run: kubectl get svc -n kubecost kubecost-cost-analyzer -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'" : "Not exposed via LoadBalancer"
 }
 
 output "service_account_name" {

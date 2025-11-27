@@ -183,3 +183,35 @@ variable "cluster_autoscaler_role_arn" {
   description = "IAM role ARN for cluster autoscaler"
   type        = string
 }
+
+variable "use_three_node_groups" {
+  description = "Use 3-node-group architecture (system, user, worker) vs 2-node (main, worker)"
+  type        = bool
+  default     = false
+}
+
+# GitHub OAuth Authentication
+variable "github_enabled" {
+  description = "Enable GitHub OAuth authentication"
+  type        = bool
+  default     = false
+}
+
+variable "github_client_id" {
+  description = "GitHub OAuth app client ID"
+  type        = string
+  default     = ""
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth app client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "github_org_whitelist" {
+  description = "GitHub organization name to restrict access (optional)"
+  type        = string
+  default     = ""
+}

@@ -98,6 +98,16 @@ output "certificate_status" {
   value       = var.enable_acm ? module.acm[0].certificate_status : "N/A - ACM disabled"
 }
 
+output "acm_certificate_validation_records" {
+  description = "DNS validation records for ACM certificate (add these to your DNS provider)"
+  value       = var.enable_acm ? module.acm[0].dns_validation_records : []
+}
+
+output "acm_validation_instructions" {
+  description = "Instructions for validating the ACM certificate"
+  value       = var.enable_acm ? module.acm[0].validation_instructions : null
+}
+
 # JupyterHub Access Information (only for JupyterHub deployments)
 output "jupyterhub_url" {
   description = "URL to access JupyterHub"

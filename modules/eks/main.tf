@@ -393,12 +393,10 @@ resource "aws_eks_node_group" "system" {
     type = var.system_enable_spot_instances ? "spot" : "on-demand"
   }
 
-  # Taint to prevent user pods from scheduling on system node
-  taint {
-    key    = "system"
-    value  = "true"
-    effect = "NoSchedule"
-  }
+  # NOTE: No taint on system nodes!
+  # EKS managed add-ons (CoreDNS, EBS CSI) need to run on system nodes
+  # and don't have tolerations configured.
+  # We use nodeSelectors in Helm configs to control pod placement instead.
 
   tags = merge(
     var.tags,

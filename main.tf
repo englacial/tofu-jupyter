@@ -88,6 +88,8 @@ locals {
   # Extract secrets
   cognito_client_secret = data.sops_file.secrets.data["cognito.client_secret"]
   github_token          = try(data.sops_file.secrets.data["github.token"], "")
+  github_client_id      = try(data.sops_file.secrets.data["github.client_id"], "")
+  github_client_secret  = try(data.sops_file.secrets.data["github.client_secret"], "")
 
   # Cost optimization flags
   enable_nat_gateway = var.enable_nat_gateway
@@ -150,11 +152,14 @@ module "cognito" {
 module "s3" {
   source = "./modules/s3"
 
-  cluster_name   = local.cluster_name
-  environment    = var.environment
-  force_destroy  = var.force_destroy_s3
-  lifecycle_days = var.s3_lifecycle_days
-  tags           = local.common_tags
+  cluster_name       = local.cluster_name
+  environment        = var.environment
+  region             = var.region
+  force_destroy      = var.force_destroy_s3
+  lifecycle_days     = var.s3_lifecycle_days
+  enable_cur         = var.enable_kubecost
+  cur_retention_days = 90
+  tags               = local.common_tags
 }
 
 # Module: ACM Certificate
@@ -181,18 +186,35 @@ module "eks" {
   main_node_subnet_ids = var.pin_main_nodes_single_az ? module.networking.first_private_subnet_id : null
   kms_key_id           = module.kms.key_id
 
-  # Node groups
-  main_node_instance_types = var.main_node_instance_types
-  main_node_min_size       = local.main_node_config.min_size
-  main_node_desired_size   = local.main_node_config.desired_size
-  main_node_max_size       = local.main_node_config.max_size
+  # 3-Node-Group Architecture
+  use_three_node_groups = var.use_three_node_groups
 
-  dask_node_instance_types = var.dask_node_instance_types
-  dask_node_min_size       = local.dask_node_config.min_size
-  dask_node_desired_size   = local.dask_node_config.desired_size
-  dask_node_max_size       = local.dask_node_config.max_size
+  # System node group (3-node architecture)
+  system_node_instance_types   = var.system_node_instance_types
+  system_node_min_size         = var.system_node_min_size
+  system_node_desired_size     = var.system_node_desired_size
+  system_node_max_size         = var.system_node_max_size
+  system_enable_spot_instances = var.system_enable_spot_instances
 
+  # User node group (3-node architecture)
+  user_node_instance_types   = var.user_node_instance_types
+  user_node_min_size         = var.user_node_min_size
+  user_node_desired_size     = var.user_node_desired_size
+  user_node_max_size         = var.user_node_max_size
+  user_enable_spot_instances = var.user_enable_spot_instances
+
+  # Main node group (legacy 2-node architecture)
+  main_node_instance_types   = var.main_node_instance_types
+  main_node_min_size         = local.main_node_config.min_size
+  main_node_desired_size     = local.main_node_config.desired_size
+  main_node_max_size         = local.main_node_config.max_size
   main_enable_spot_instances = var.main_enable_spot_instances
+
+  # Dask worker node group (both architectures)
+  dask_node_instance_types   = var.dask_node_instance_types
+  dask_node_min_size         = local.dask_node_config.min_size
+  dask_node_desired_size     = local.dask_node_config.desired_size
+  dask_node_max_size         = local.dask_node_config.max_size
   dask_enable_spot_instances = var.dask_enable_spot_instances
 
   tags = local.common_tags
@@ -252,7 +274,76 @@ module "helm" {
   region                      = var.region
   cluster_autoscaler_role_arn = module.eks.cluster_autoscaler_arn
 
+  # Node group architecture
+  use_three_node_groups = var.use_three_node_groups
+
+  # GitHub OAuth authentication
+  github_enabled        = var.github_enabled
+  github_client_id      = local.github_client_id
+  github_client_secret  = local.github_client_secret
+  github_org_whitelist  = var.github_org_whitelist
+
   depends_on = [module.kubernetes]
+}
+
+# Module: Kubecost (Cost Monitoring)
+module "kubecost_irsa" {
+  count  = var.enable_kubecost ? 1 : 0
+  source = "./modules/irsa"
+
+  cluster_name      = local.cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  namespace         = "kubecost"
+  service_account   = "kubecost-cost-analyzer"
+
+  policy_statements = [
+    {
+      Effect = "Allow"
+      Action = [
+        "ce:GetCostAndUsage",
+        "ce:GetCostForecast",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:GetPartitions"
+      ]
+      Resource = "*"
+    }
+  ]
+
+  tags = local.common_tags
+}
+
+module "kubecost" {
+  count  = var.enable_kubecost ? 1 : 0
+  source = "./modules/kubecost"
+
+  cluster_name           = local.cluster_name
+  region                 = var.region
+  cur_bucket_name        = module.s3.cur_bucket_name
+  kubecost_irsa_role_arn = module.kubecost_irsa[0].role_arn
+
+  # Public access configuration
+  expose_via_loadbalancer       = var.kubecost_expose_public
+  kubecost_basic_auth_enabled   = var.kubecost_enable_auth
+  kubecost_basic_auth_password  = var.kubecost_auth_password
+
+  # Node selector based on architecture
+  node_selector = var.use_three_node_groups ? {
+    role = "system"
+  } : {
+    role = "main"
+  }
+
+  # No tolerations needed - system nodes don't have taints
+  tolerations = []
+
+  tags       = local.common_tags
+  depends_on = [module.helm, module.kubecost_irsa]
 }
 
 # Module: Monitoring (Optional)
