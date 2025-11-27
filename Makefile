@@ -266,9 +266,9 @@ graph: ## Generate resource graph
 
 ##@ Import Operations
 
-import-existing: ## Import existing Pangeo cluster
-	@echo -e "$(GREEN)Starting import of existing cluster...$(NC)"
-	./scripts/import-existing-pangeo.sh
+#import-existing: ## Import existing Pangeo cluster
+#	@echo -e "$(GREEN)Starting import of existing cluster...$(NC)"
+#	./scripts/import-existing-pangeo.sh
 
 post-import-validate: ## Validate imported configuration
 	@echo -e "$(GREEN)Validating imported configuration...$(NC)"
