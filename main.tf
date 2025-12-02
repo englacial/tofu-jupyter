@@ -198,6 +198,7 @@ module "eks" {
 
   # User node group (3-node architecture)
   user_node_instance_types   = var.user_node_instance_types
+  user_node_subnet_ids       = var.pin_user_nodes_single_az ? module.networking.first_private_subnet_id : null
   user_node_min_size         = var.user_node_min_size
   user_node_desired_size     = var.user_node_desired_size
   user_node_max_size         = var.user_node_max_size

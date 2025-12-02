@@ -140,6 +140,12 @@ variable "user_node_instance_types" {
   default     = ["r5.xlarge"]
 }
 
+variable "user_node_subnet_ids" {
+  description = "Subnet IDs for user node group (optionally single AZ for EBS volume affinity). If null, uses subnet_ids."
+  type        = list(string)
+  default     = null
+}
+
 variable "user_node_min_size" {
   description = "Minimum size of user node group"
   type        = number

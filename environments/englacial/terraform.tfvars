@@ -14,7 +14,7 @@ owner_email  = "devops@example.com"
 cost_center  = "research"
 
 # Kubernetes
-kubernetes_version = "1.29"
+kubernetes_version = "1.34"
 
 # ACM Certificate - ENABLED for HTTPS production deployment
 enable_acm          = true   # Enable SSL certificate
@@ -27,6 +27,7 @@ vpc_cidr                  = "10.4.0.0/16"  # Unique CIDR for englacial
 enable_nat_gateway        = true           # Required for private subnets
 single_nat_gateway        = true           # Single NAT to save $45/month
 pin_main_nodes_single_az  = false          # Not needed with 3-node-group architecture
+pin_user_nodes_single_az  = true           # Pin to us-west-2a to fix PVC zone affinity
 
 # Node Group - System (Always Running) - r5.large
 # Runs: JupyterHub Hub, Kubecost, Prometheus, System pods

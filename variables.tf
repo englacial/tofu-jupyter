@@ -107,6 +107,12 @@ variable "pin_main_nodes_single_az" {
   default     = false
 }
 
+variable "pin_user_nodes_single_az" {
+  description = "Pin user node group to single AZ (us-west-2a) to fix PVC zone affinity for user persistent volumes"
+  type        = bool
+  default     = false
+}
+
 # Node Group Configuration - System (Always Running)
 # For environments using 3-node-group architecture (system, user, worker)
 variable "system_node_instance_types" {

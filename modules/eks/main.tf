@@ -324,6 +324,7 @@ resource "aws_eks_node_group" "main" {
 
   instance_types = var.main_node_instance_types
   capacity_type  = var.main_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  ami_type       = "AL2023_x86_64_STANDARD"
 
   # Use the launch template with NVMe mounting script
   launch_template {
@@ -377,6 +378,7 @@ resource "aws_eks_node_group" "system" {
 
   instance_types = var.system_node_instance_types
   capacity_type  = var.system_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  ami_type       = "AL2023_x86_64_STANDARD"
 
   scaling_config {
     desired_size = var.system_node_desired_size
@@ -421,10 +423,11 @@ resource "aws_eks_node_group" "user" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.cluster_name}-user"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = var.subnet_ids
+  subnet_ids      = var.user_node_subnet_ids != null ? var.user_node_subnet_ids : var.subnet_ids
 
   instance_types = var.user_node_instance_types
   capacity_type  = var.user_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  ami_type       = "AL2023_x86_64_STANDARD"
 
   scaling_config {
     desired_size = var.user_node_desired_size
@@ -566,6 +569,7 @@ resource "aws_eks_node_group" "dask_workers" {
 
   instance_types = var.dask_node_instance_types
   capacity_type  = var.dask_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  ami_type       = "AL2023_x86_64_STANDARD"
 
   # Use the launch template with NVMe mounting script
   launch_template {

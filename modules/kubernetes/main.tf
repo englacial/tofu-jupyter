@@ -1,6 +1,46 @@
 # Kubernetes Module - Service Accounts and RBAC
 # Creates service accounts for JupyterHub users with S3 access
 
+# GP3 Storage Class (default)
+# Benefits: 20% cheaper than gp2, 3000 IOPS baseline regardless of size
+resource "kubernetes_storage_class_v1" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "WaitForFirstConsumer"
+  allow_volume_expansion = true
+
+  parameters = {
+    type      = "gp3"
+    fsType    = "ext4"
+    encrypted = "true"
+  }
+}
+
+# Remove default annotation from gp2 (EKS creates this automatically)
+resource "kubernetes_annotations" "gp2_not_default" {
+  api_version = "storage.k8s.io/v1"
+  kind        = "StorageClass"
+  metadata {
+    name = "gp2"
+  }
+
+  annotations = {
+    "storageclass.kubernetes.io/is-default-class" = "false"
+  }
+
+  # Ignore if gp2 doesn't exist (won't fail on fresh cluster)
+  force = false
+
+  depends_on = [kubernetes_storage_class_v1.gp3]
+}
+
 # Create daskhub namespace
 resource "kubernetes_namespace" "daskhub" {
   metadata {
