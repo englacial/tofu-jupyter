@@ -415,17 +415,20 @@ resource "aws_eks_node_group" "system" {
   ]
 }
 
-# User Node Group (3-node architecture)
-# Scale to zero, runs JupyterHub user pods
-resource "aws_eks_node_group" "user" {
+# User Node Groups (3-node architecture)
+# Split into separate groups for Small (r5.large) and Medium (r5.xlarge) profiles
+# This allows cluster autoscaler to scale the correct instance type for each profile
+
+# User Small Node Group - r5.large only
+resource "aws_eks_node_group" "user_small" {
   count = var.use_three_node_groups ? 1 : 0
 
   cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-user"
+  node_group_name = "${var.cluster_name}-user-small"
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.user_node_subnet_ids != null ? var.user_node_subnet_ids : var.subnet_ids
 
-  instance_types = var.user_node_instance_types
+  instance_types = ["r5.large"]  # Small profile: 2 vCPU, 16 GiB
   capacity_type  = var.user_enable_spot_instances ? "SPOT" : "ON_DEMAND"
   ami_type       = "AL2023_x86_64_STANDARD"
 
@@ -441,6 +444,7 @@ resource "aws_eks_node_group" "user" {
 
   labels = {
     role = "user"
+    size = "small"
     type = var.user_enable_spot_instances ? "spot" : "on-demand"
   }
 
@@ -449,7 +453,54 @@ resource "aws_eks_node_group" "user" {
   tags = merge(
     var.tags,
     {
-      Name                                            = "${var.cluster_name}-user-node"
+      Name                                            = "${var.cluster_name}-user-small-node"
+      "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+      "k8s.io/cluster-autoscaler/enabled"             = "true"
+    }
+  )
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policy,
+    aws_iam_role_policy_attachment.node_cni_policy,
+    aws_iam_role_policy_attachment.node_registry_policy
+  ]
+}
+
+# User Medium Node Group - r5.xlarge only
+resource "aws_eks_node_group" "user_medium" {
+  count = var.use_three_node_groups ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-user-medium"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.user_node_subnet_ids != null ? var.user_node_subnet_ids : var.subnet_ids
+
+  instance_types = ["r5.xlarge"]  # Medium profile: 4 vCPU, 32 GiB
+  capacity_type  = var.user_enable_spot_instances ? "SPOT" : "ON_DEMAND"
+  ami_type       = "AL2023_x86_64_STANDARD"
+
+  scaling_config {
+    desired_size = var.user_node_desired_size
+    max_size     = var.user_node_max_size
+    min_size     = var.user_node_min_size
+  }
+
+  update_config {
+    max_unavailable_percentage = 33
+  }
+
+  labels = {
+    role = "user"
+    size = "medium"
+    type = var.user_enable_spot_instances ? "spot" : "on-demand"
+  }
+
+  # No taint - user pods welcome here
+
+  tags = merge(
+    var.tags,
+    {
+      Name                                            = "${var.cluster_name}-user-medium-node"
       "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
       "k8s.io/cluster-autoscaler/enabled"             = "true"
     }

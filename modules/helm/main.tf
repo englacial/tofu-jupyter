@@ -41,6 +41,7 @@ locals {
     }
     # Profile selection: Small (r5.large) or Medium (r5.xlarge)
     # Note: r5.large has ~1930m allocatable CPU, minus ~230m for DaemonSets = ~1700m available
+    # Uses "size" label to target separate node groups for reliable autoscaling
     profileList = var.enable_profile_selection ? [
       {
         display_name = "Small (2 CPU, 14 GB)"
@@ -52,8 +53,8 @@ locals {
           mem_guarantee = "14G"
           mem_limit     = "15G"
           node_selector = {
-            role                                 = local.user_node_role
-            "node.kubernetes.io/instance-type"   = "r5.large"
+            role = local.user_node_role
+            size = "small"  # Targets user-small node group (r5.large)
           }
         }
       },
@@ -67,8 +68,8 @@ locals {
           mem_guarantee = "28G"
           mem_limit     = "30G"
           node_selector = {
-            role                                 = local.user_node_role
-            "node.kubernetes.io/instance-type"   = "r5.xlarge"
+            role = local.user_node_role
+            size = "medium"  # Targets user-medium node group (r5.xlarge)
           }
         }
       }

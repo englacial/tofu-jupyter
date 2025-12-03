@@ -70,14 +70,24 @@ output "system_node_group_status" {
   value       = try(aws_eks_node_group.system[0].status, null)
 }
 
-output "user_node_group_id" {
-  description = "EKS node group ID for user nodes (3-node architecture)"
-  value       = try(aws_eks_node_group.user[0].id, null)
+output "user_small_node_group_id" {
+  description = "EKS node group ID for user-small nodes (r5.large)"
+  value       = try(aws_eks_node_group.user_small[0].id, null)
 }
 
-output "user_node_group_status" {
-  description = "Status of the user node group (3-node architecture)"
-  value       = try(aws_eks_node_group.user[0].status, null)
+output "user_small_node_group_status" {
+  description = "Status of the user-small node group"
+  value       = try(aws_eks_node_group.user_small[0].status, null)
+}
+
+output "user_medium_node_group_id" {
+  description = "EKS node group ID for user-medium nodes (r5.xlarge)"
+  value       = try(aws_eks_node_group.user_medium[0].id, null)
+}
+
+output "user_medium_node_group_status" {
+  description = "Status of the user-medium node group"
+  value       = try(aws_eks_node_group.user_medium[0].status, null)
 }
 
 output "dask_node_group_id" {
