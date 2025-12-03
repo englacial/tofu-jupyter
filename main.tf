@@ -278,6 +278,9 @@ module "helm" {
   # Node group architecture
   use_three_node_groups = var.use_three_node_groups
 
+  # JupyterLab profile selection
+  enable_profile_selection = var.enable_profile_selection
+
   # GitHub OAuth authentication
   github_enabled        = var.github_enabled
   github_client_id      = local.github_client_id

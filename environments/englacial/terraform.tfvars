@@ -37,10 +37,11 @@ system_node_min_size       = 1             # Always 1 (fixed)
 system_node_desired_size   = 1
 system_node_max_size       = 1             # Cannot scale (dedicated system node)
 
-# Node Group - User (Scale to Zero) - r5.xlarge
+# Node Group - User (Scale to Zero) - r5.large or r5.xlarge
 # Runs: JupyterHub user pods (notebooks)
 # Scales up when user logs in, scales down when idle
-user_node_instance_types = ["r5.xlarge"]   # 4 vCPU, 32GB RAM
+# Users can select Small (r5.large) or Medium (r5.xlarge) at login
+user_node_instance_types = ["r5.large", "r5.xlarge"]  # Small: 2 vCPU, 16GB | Medium: 4 vCPU, 32GB
 user_node_min_size       = 0               # Scale to zero when idle
 user_node_desired_size   = 0
 user_node_max_size       = 10              # Support up to 10 concurrent users
@@ -67,8 +68,13 @@ system_enable_spot_instances = false       # System: ON-DEMAND (stability)
 user_enable_spot_instances   = false       # User: ON-DEMAND (user experience)
 dask_enable_spot_instances   = true        # Dask: SPOT (cost savings)
 
-# User Resource Limits - Sized for r5.xlarge node
-# One user per r5.xlarge node (4 vCPU, 32GB RAM)
+# JupyterLab Profile Selection - Users choose instance size at login
+# Small (default): r5.large - 2 vCPU, 14 GB - $0.126/hr
+# Medium: r5.xlarge - 4 vCPU, 28 GB - $0.252/hr
+enable_profile_selection = true
+
+# User Resource Limits (only used when enable_profile_selection = false)
+# These are legacy settings - when profiles are enabled, resources are set per-profile
 user_cpu_guarantee    = 3      # 3 cores guaranteed
 user_cpu_limit        = 4      # 4 cores max (full node)
 user_memory_guarantee = "24G"  # 24GB guaranteed

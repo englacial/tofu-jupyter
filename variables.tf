@@ -247,6 +247,13 @@ variable "use_three_node_groups" {
   default     = false
 }
 
+# JupyterLab Profile Selection
+variable "enable_profile_selection" {
+  description = "Enable user selection of JupyterLab instance size (Small/Medium profiles)"
+  type        = bool
+  default     = true
+}
+
 # Container Image Configuration
 variable "singleuser_image_name" {
   description = "Docker image name for single user notebooks"
@@ -257,7 +264,7 @@ variable "singleuser_image_name" {
 variable "singleuser_image_tag" {
   description = "Docker image tag for single user notebooks"
   type        = string
-  default     = "2025.01.10"
+  default     = "2024.04.08"  # Compatible with DaskHub 2024.1.1 (JupyterHub 4.0.2)
 }
 
 # User Resource Limits

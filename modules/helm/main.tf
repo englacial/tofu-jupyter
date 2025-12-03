@@ -1,6 +1,93 @@
 # Helm Module - DaskHub or Standalone Dask Gateway Deployment
 # Based on daskhub.yaml configuration
 
+# Singleuser configuration - profile-based instance selection
+locals {
+  # Base role for node selection
+  user_node_role = var.use_three_node_groups ? "user" : "main"
+
+  # Profile-based configuration: users choose Small or Medium instance at login
+  singleuser_config = {
+    serviceAccountName = var.user_service_account
+    startTimeout      = 600
+    image = {
+      name = var.singleuser_image_name
+      tag  = var.singleuser_image_tag
+    }
+    extraEnv = {
+      DASK_GATEWAY__ADDRESS                 = "http://proxy-public/services/dask-gateway"
+      DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE = "{{JUPYTER_IMAGE_SPEC}}"
+      SCRATCH_BUCKET                        = "s3://${var.s3_bucket}/$(JUPYTERHUB_USER)"
+    }
+    lifecycleHooks = var.lifecycle_hooks_enabled ? {
+      postStart = {
+        exec = {
+          command = var.lifecycle_post_start_command
+        }
+      }
+    } : null
+    extraFiles = {
+      "jupyter_notebook_config.json" = {
+        mountPath = "/etc/jupyter/jupyter_notebook_config.json"
+        data = {
+          MappingKernelManager = {
+            cull_idle_timeout = var.kernel_cull_timeout
+            cull_interval     = 120
+            cull_connected    = true
+            cull_busy         = false
+          }
+        }
+      }
+    }
+    # Profile selection: Small (r5.large) or Medium (r5.xlarge)
+    # Note: r5.large has ~1930m allocatable CPU, minus ~230m for DaemonSets = ~1700m available
+    profileList = var.enable_profile_selection ? [
+      {
+        display_name = "Small (2 CPU, 14 GB)"
+        description  = "Standard JupyterLab environment"
+        default      = true
+        kubespawner_override = {
+          cpu_guarantee = 1.6  # Must be < 1.7 to fit on r5.large after DaemonSet overhead
+          cpu_limit     = 2
+          mem_guarantee = "14G"
+          mem_limit     = "15G"
+          node_selector = {
+            role                                 = local.user_node_role
+            "node.kubernetes.io/instance-type"   = "r5.large"
+          }
+        }
+      },
+      {
+        display_name = "Medium (4 CPU, 28 GB)"
+        description  = "For larger datasets and heavier computation"
+        default      = false
+        kubespawner_override = {
+          cpu_guarantee = 3.5
+          cpu_limit     = 4
+          mem_guarantee = "28G"
+          mem_limit     = "30G"
+          node_selector = {
+            role                                 = local.user_node_role
+            "node.kubernetes.io/instance-type"   = "r5.xlarge"
+          }
+        }
+      }
+    ] : null
+    # Static resource config (used when enable_profile_selection = false)
+    cpu = var.enable_profile_selection ? null : {
+      limit     = var.user_cpu_limit
+      guarantee = var.user_cpu_guarantee
+    }
+    memory = var.enable_profile_selection ? null : {
+      limit     = var.user_memory_limit
+      guarantee = var.user_memory_guarantee
+    }
+    nodeSelector = var.enable_profile_selection ? null : {
+      role = local.user_node_role
+    }
+  }
+}
+
 # Full DaskHub (JupyterHub + Dask Gateway)
 resource "helm_release" "daskhub" {
   count = var.enable_jupyterhub ? 1 : 0
@@ -17,71 +104,36 @@ resource "helm_release" "daskhub" {
   values = [
     yamlencode({
       jupyterhub = {
-        singleuser = {
-          serviceAccountName = var.user_service_account
-          startTimeout      = 600
-          image = {
-            name = var.singleuser_image_name
-            tag  = var.singleuser_image_tag
-          }
-          cpu = {
-            limit     = var.user_cpu_limit
-            guarantee = var.user_cpu_guarantee
-          }
-          memory = {
-            limit     = var.user_memory_limit
-            guarantee = var.user_memory_guarantee
-          }
-          # Node affinity - user pods run on user nodes (3-node) or main nodes (2-node)
-          nodeSelector = {
-            role = var.use_three_node_groups ? "user" : "main"
-          }
-          extraEnv = {
-            DASK_GATEWAY__ADDRESS                 = "http://proxy-public/services/dask-gateway"
-            DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE = "{{JUPYTER_IMAGE_SPEC}}"
-            SCRATCH_BUCKET                        = "s3://${var.s3_bucket}/$(JUPYTERHUB_USER)"
-          }
-          lifecycleHooks = var.lifecycle_hooks_enabled ? {
-            postStart = {
-              exec = {
-                command = var.lifecycle_post_start_command
-              }
-            }
-          } : null
-          extraFiles = {
-            "jupyter_notebook_config.json" = {
-              mountPath = "/etc/jupyter/jupyter_notebook_config.json"
-              data = {
-                MappingKernelManager = {
-                  cull_idle_timeout = var.kernel_cull_timeout
-                  cull_interval     = 120
-                  cull_connected    = true
-                  cull_busy         = false
-                }
-              }
-            }
-          }
-        }
+        # Singleuser config with profile selection (Small/Medium instance sizes)
+        singleuser = local.singleuser_config
         proxy = {
-          # Note: For ALB-terminated SSL, we do NOT enable JupyterHub's HTTPS
-          # The ALB handles SSL termination, JupyterHub receives HTTP
+          # Note: For NLB-terminated SSL, we do NOT enable JupyterHub's HTTPS
+          # The NLB handles SSL termination, JupyterHub receives HTTP
           https = {
-            enabled = false  # ALB terminates SSL, not JupyterHub
+            enabled = false  # NLB terminates SSL, not JupyterHub
           }
           service = {
             type = "LoadBalancer"
-            # AWS LoadBalancer annotations for HTTPS (ALB-terminated)
+            # AWS Network Load Balancer (NLB) for proper WebSocket support
+            # Classic ELB drops WebSocket connections due to HTTP mode and 60s idle timeout
+            # NLB operates at Layer 4 (TCP) and properly maintains long-lived connections
             annotations = var.certificate_arn != "" ? {
-              "service.beta.kubernetes.io/aws-load-balancer-ssl-cert" = var.certificate_arn
-              "service.beta.kubernetes.io/aws-load-balancer-ssl-ports" = "443"
-              "service.beta.kubernetes.io/aws-load-balancer-backend-protocol" = "http"
-            } : {}
+              "service.beta.kubernetes.io/aws-load-balancer-type"            = "nlb"
+              "service.beta.kubernetes.io/aws-load-balancer-scheme"          = "internet-facing"
+              "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type" = "ip"
+              "service.beta.kubernetes.io/aws-load-balancer-ssl-cert"        = var.certificate_arn
+              "service.beta.kubernetes.io/aws-load-balancer-ssl-ports"       = "443"
+            } : {
+              "service.beta.kubernetes.io/aws-load-balancer-type"            = "nlb"
+              "service.beta.kubernetes.io/aws-load-balancer-scheme"          = "internet-facing"
+              "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type" = "ip"
+            }
             # Expose both HTTP (80) and HTTPS (443) ports
             extraPorts = var.certificate_arn != "" ? [
               {
                 name       = "https"
                 port       = 443
-                targetPort = "http"  # Backend still uses HTTP, SSL terminates at LB
+                targetPort = "http"  # Backend still uses HTTP, SSL terminates at NLB
               }
             ] : []
           }
@@ -104,6 +156,16 @@ resource "helm_release" "daskhub" {
             Authenticator = {
               allow_all   = var.allow_all_users
               admin_users = var.admin_users
+            }
+            # KubeSpawner Configuration
+            # Fix for terminal spawning issue - allowPrivilegeEscalation must be true for terminals to work
+            # See: https://discourse.jupyter.org/t/singleuser-allowprivilegeescalation-not-work/14298
+            KubeSpawner = {
+              container_security_context = {
+                runAsUser                = 1000
+                runAsGroup               = 100
+                allowPrivilegeEscalation = true  # Required for JupyterLab terminals to function properly
+              }
             }
             # GitHub OAuth Configuration
             GitHubOAuthenticator = var.github_enabled ? {
