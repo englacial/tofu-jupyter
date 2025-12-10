@@ -119,3 +119,6 @@ use_three_node_groups = true  # Use 3-node architecture (system, user, worker)
 github_enabled = true         # Enable GitHub OAuth for real authentication
 github_org_whitelist = ""     # Optional: Add your GitHub org name to restrict access
                               # Example: "your-org-name" to allow only org members
+
+# Lambda Integration (for xagg ICESat-2 processing)
+enable_lambda_invoke = true   # Allow invoking Lambda functions from JupyterHub

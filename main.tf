@@ -227,12 +227,23 @@ module "eks" {
 module "kubernetes" {
   source = "./modules/kubernetes"
 
-  cluster_name      = local.cluster_name
-  s3_bucket         = module.s3.bucket_name
-  kms_key_id        = module.kms.key_id
-  oidc_provider_arn = module.eks.oidc_provider_arn
+  cluster_name         = local.cluster_name
+  s3_bucket            = module.s3.bucket_name
+  kms_key_id           = module.kms.key_id
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  enable_lambda_invoke = var.enable_lambda_invoke
 
   depends_on = [module.eks]
+}
+
+# Module: Lambda (Optional - for xagg processing)
+module "lambda" {
+  count  = var.enable_lambda_invoke ? 1 : 0
+  source = "./modules/lambda"
+
+  cluster_name = local.cluster_name
+  s3_bucket    = module.s3.bucket_name
+  tags         = local.common_tags
 }
 
 # Module: Helm Releases

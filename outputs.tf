@@ -333,3 +333,9 @@ kubectl delete pods -n jupyterhub -l component=singleuser-server
 helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyterhub --values helm-values.yaml
 EOT
 }
+
+# Lambda execution role (if enabled)
+output "lambda_execution_role_arn" {
+  description = "ARN of the Lambda execution role (for xagg processing)"
+  value       = var.enable_lambda_invoke ? module.lambda[0].execution_role_arn : null
+}

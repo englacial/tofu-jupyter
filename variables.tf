@@ -432,3 +432,10 @@ variable "skip_final_snapshot" {
   type        = bool
   default     = false
 }
+
+# Lambda Integration
+variable "enable_lambda_invoke" {
+  description = "Enable Lambda invoke permissions for user service account (for xagg processing)"
+  type        = bool
+  default     = false
+}

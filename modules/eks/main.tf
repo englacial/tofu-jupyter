@@ -85,7 +85,7 @@ resource "aws_eks_cluster" "main" {
     resources = ["secrets"]
   }
 
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  enabled_cluster_log_types = ["api", "authenticator", "controllerManager", "scheduler"]
 
   tags = var.tags
 

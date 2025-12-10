@@ -60,54 +60,64 @@ module "user_s3_irsa" {
   namespace         = "daskhub"
   service_account   = "user-sa"
 
-  policy_statements = [
-    # Allow listing all accessible buckets
-    {
-      Effect = "Allow"
-      Action = [
-        "s3:ListAllMyBuckets",
-        "s3:GetBucketLocation",
-        "s3:GetBucketVersioning"
-      ]
-      Resource = "*"
-    },
-    # Full access to ALL buckets in this account
-    # This gives broad S3 access - restrict if needed for production
-    {
-      Effect = "Allow"
-      Action = [
-        "s3:ListBucket",
-        "s3:ListBucketMultipartUploads",
-        "s3:GetBucketLocation",
-        "s3:GetBucketAcl",
-        "s3:GetBucketCORS",
-        "s3:GetBucketVersioning",
-        "s3:GetBucketRequestPayment",
-        "s3:GetBucketPolicy",
-        "s3:GetBucketPolicyStatus",
-        "s3:GetBucketPublicAccessBlock",
-        "s3:GetBucketTagging"
-      ]
-      Resource = "arn:aws:s3:::*"
-    },
-    {
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject",
-        "s3:GetObjectVersion",
-        "s3:PutObject",
-        "s3:PutObjectAcl",
-        "s3:DeleteObject",
-        "s3:DeleteObjectVersion",
-        "s3:ListMultipartUploadParts",
-        "s3:AbortMultipartUpload",
-        "s3:GetObjectTorrent",
-        "s3:GetObjectVersionTorrent",
-        "s3:RestoreObject"
-      ]
-      Resource = "arn:aws:s3:::*/*"
-    }
-  ]
+  policy_statements = concat(
+    [
+      # Allow listing all accessible buckets
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListAllMyBuckets",
+          "s3:GetBucketLocation",
+          "s3:GetBucketVersioning"
+        ]
+        Resource = "*"
+      },
+      # Full access to ALL buckets in this account
+      # This gives broad S3 access - restrict if needed for production
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:ListBucketMultipartUploads",
+          "s3:GetBucketLocation",
+          "s3:GetBucketAcl",
+          "s3:GetBucketCORS",
+          "s3:GetBucketVersioning",
+          "s3:GetBucketRequestPayment",
+          "s3:GetBucketPolicy",
+          "s3:GetBucketPolicyStatus",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetBucketTagging"
+        ]
+        Resource = "arn:aws:s3:::*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:PutObjectAcl",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion",
+          "s3:ListMultipartUploadParts",
+          "s3:AbortMultipartUpload",
+          "s3:GetObjectTorrent",
+          "s3:GetObjectVersionTorrent",
+          "s3:RestoreObject"
+        ]
+        Resource = "arn:aws:s3:::*/*"
+      }
+    ],
+    # Conditionally add Lambda invoke permission
+    var.enable_lambda_invoke ? [
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:aws:lambda:*:*:function:*"
+      }
+    ] : []
+  )
 }
 
 # Create the Kubernetes service account with IAM role annotation

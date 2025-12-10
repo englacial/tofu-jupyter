@@ -19,3 +19,9 @@ variable "oidc_provider_arn" {
   description = "ARN of the OIDC provider for IRSA"
   type        = string
 }
+
+variable "enable_lambda_invoke" {
+  description = "Enable Lambda invoke permissions for user service account"
+  type        = bool
+  default     = false
+}
